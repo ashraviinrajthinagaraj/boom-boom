@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Boom Boom</title>
+  <meta name="description" content="Boom Boom: private messages for our group.">
+  <meta name="theme-color" content="#EEF0F7" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0F1124" media="(prefers-color-scheme: dark)">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=Unbounded:wght@600;800&display=swap">
+  <link rel="stylesheet" href="style.css">
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+
+  <!-- Loading / connection problems -->
+  <main id="boot" class="screen center">
+    <div class="card">
+      <p class="wordmark small"><span>Boom</span><span class="echo">Boom</span></p>
+      <p id="boot-msg" class="muted">Loading…</p>
+      <button id="boot-retry" class="btn primary" type="button" hidden>Reload</button>
+    </div>
+  </main>
+
+  <!-- Not connected to Supabase yet -->
+  <main id="screen-config" class="screen center" hidden>
+    <div class="card">
+      <h1 class="wordmark large"><span>Boom</span><span class="echo">Boom</span></h1>
+      <h2 class="screen-title">Almost there</h2>
+      <p id="config-msg">Add your Supabase project URL and publishable key to <code>config.js</code>, then reload this page. The README walks through it.</p>
+    </div>
+  </main>
+
+  <!-- Sign in -->
+  <main id="screen-login" class="screen center" hidden>
+    <div class="card">
+      <h1 class="wordmark large"><span>Boom</span><span class="echo">Boom</span></h1>
+      <p class="lede">Private messages for our group.</p>
+      <form id="login-form" class="form" novalidate>
+        <label>Email
+          <input type="email" name="email" autocomplete="email" inputmode="email" required>
+        </label>
+        <label>Password
+          <input type="password" name="password" autocomplete="current-password" required>
+        </label>
+        <p class="form-error" role="alert" hidden></p>
+        <button type="submit" class="btn primary">Sign in</button>
+      </form>
+      <p class="muted small-print">Boom Boom is invite-only. Ask the person who runs it to add you.</p>
+    </div>
+    <footer class="credit plain">Created by Ashraviinraj Thinagaraj.</footer>
+  </main>
+
+  <!-- First sign-in: pick a name -->
+  <main id="screen-profile" class="screen center" hidden>
+    <div class="card">
+      <h1 class="screen-title">Set up your profile</h1>
+      <p class="lede">This is how your friends will see you.</p>
+      <form id="profile-form" class="form" novalidate>
+        <label>Display name
+          <input name="display_name" maxlength="40" autocomplete="nickname" required>
+        </label>
+        <label>Username
+          <span class="hint">3–20 characters: lowercase letters, numbers or _</span>
+          <input name="username" maxlength="20" autocapitalize="none" autocorrect="off" spellcheck="false" required>
+        </label>
+        <p class="form-error" role="alert" hidden></p>
+        <button type="submit" class="btn primary">Save and continue</button>
+      </form>
+      <button id="profile-signout" class="link-btn" type="button">Sign out</button>
+    </div>
+  </main>
+
+  <!-- The app -->
+  <div id="screen-app" class="screen app" hidden>
+    <aside class="sidebar" aria-label="Chats">
+      <header class="bar">
+        <p class="wordmark small"><span>Boom</span><span class="echo">Boom</span></p>
+        <button class="icon-btn" id="btn-new" type="button" aria-label="New chat" title="New chat">
+          <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+        </button>
+        <button class="icon-btn" id="btn-settings" type="button" aria-label="Settings" title="Settings">
+          <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M4 7h9M19 7h1M4 17h3M13 17h7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="16" cy="7" r="2.6" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="10" cy="17" r="2.6" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+        </button>
+      </header>
+      <p id="conn-banner" class="conn-banner" role="status" hidden>Reconnecting… new messages will appear when you're back online.</p>
+      <ul id="chat-list" class="chat-list"></ul>
+      <div id="chat-list-empty" class="empty" hidden>
+        <p>No chats yet.</p>
+        <button class="btn primary" id="btn-new-empty" type="button">Start a chat</button>
+      </div>
+      <footer class="credit">Created by Ashraviinraj Thinagaraj.</footer>
+    </aside>
+
+    <section class="conversation" aria-label="Conversation">
+      <div id="conversation-empty" class="conversation-empty">
+        <p>Pick a chat, or start a new one.</p>
+      </div>
+      <div id="conversation-inner" class="conversation-inner" hidden>
+        <header class="bar chat-bar">
+          <button class="icon-btn back" id="btn-back" type="button" aria-label="Back to chats">
+            <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+          <div id="chat-avatar"></div>
+          <div class="chat-who">
+            <h2 id="chat-name"></h2>
+            <p id="chat-username"></p>
+          </div>
+        </header>
+        <div id="messages" class="messages">
+          <button id="btn-older" class="btn ghost small" type="button" hidden>Show earlier messages</button>
+          <div id="message-list" class="message-list"></div>
+        </div>
+        <button id="btn-jump" class="jump" type="button" hidden>New messages</button>
+        <form id="composer" class="composer">
+          <textarea id="composer-input" rows="1" placeholder="Message" aria-label="Message" maxlength="4000"></textarea>
+          <button class="send" id="btn-send" type="submit" aria-label="Send" disabled>
+            <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M12 19V6M6 11l6-6 6 6" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+        </form>
+      </div>
+    </section>
+  </div>
+
+  <!-- New chat -->
+  <dialog id="dlg-new" class="sheet" aria-labelledby="dlg-new-title">
+    <header class="sheet-head">
+      <h2 id="dlg-new-title">New chat</h2>
+      <button class="icon-btn" type="button" data-close aria-label="Close">
+        <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+      </button>
+    </header>
+    <div class="sheet-search">
+      <input type="search" id="people-search" placeholder="Search by name" aria-label="Search by name" autocomplete="off">
+    </div>
+    <ul id="people-list" class="people-list"></ul>
+    <p id="people-empty" class="empty-small" hidden></p>
+  </dialog>
+
+  <!-- Settings -->
+  <dialog id="dlg-settings" class="sheet" aria-labelledby="dlg-settings-title">
+    <header class="sheet-head">
+      <h2 id="dlg-settings-title">Settings</h2>
+      <button class="icon-btn" type="button" data-close aria-label="Close">
+        <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+      </button>
+    </header>
+    <div class="sheet-body">
+      <form id="settings-profile-form" class="form" novalidate>
+        <h3>Your profile</h3>
+        <label>Display name
+          <input name="display_name" maxlength="40" required>
+        </label>
+        <label>Username
+          <span class="hint">3–20 characters: lowercase letters, numbers or _</span>
+          <input name="username" maxlength="20" autocapitalize="none" autocorrect="off" spellcheck="false" required>
+        </label>
+        <p class="form-error" role="alert" hidden></p>
+        <p class="form-ok" role="status" hidden></p>
+        <button type="submit" class="btn primary">Save profile</button>
+      </form>
+
+      <form id="password-form" class="form" novalidate>
+        <h3>Change password</h3>
+        <input type="text" name="username" autocomplete="username" hidden>
+        <label>New password
+          <span class="hint">At least 8 characters</span>
+          <input type="password" name="password" autocomplete="new-password" minlength="8" required>
+        </label>
+        <label>Type it again
+          <input type="password" name="confirm" autocomplete="new-password" minlength="8" required>
+        </label>
+        <p class="form-error" role="alert" hidden></p>
+        <p class="form-ok" role="status" hidden></p>
+        <button type="submit" class="btn primary">Change password</button>
+      </form>
+
+      <div class="signout-row">
+        <p class="muted" id="settings-email"></p>
+        <button id="btn-signout" class="btn ghost" type="button">Sign out</button>
+      </div>
+      <p class="credit plain">Created by Ashraviinraj Thinagaraj.</p>
+    </div>
+  </dialog>
+
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  <p id="sr-live" class="sr-only" aria-live="polite"></p>
+
+  <noscript><p class="noscript">Boom Boom needs JavaScript turned on.</p></noscript>
+  <script>
+    // If the app code can't load (no internet, blocked CDN), say so instead of loading forever.
+    setTimeout(function () {
+      if (window.__boomStarted) return;
+      var msg = document.getElementById('boot-msg');
+      var btn = document.getElementById('boot-retry');
+      if (msg) msg.textContent = "Boom Boom couldn't load. Check your internet connection, then reload.";
+      if (btn) { btn.hidden = false; btn.onclick = function () { location.reload(); }; }
+    }, 12000);
+  </script>
+</body>
+</html>
