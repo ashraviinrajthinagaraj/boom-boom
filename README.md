@@ -8,7 +8,9 @@ Created by Ashraviinraj Thinagaraj.
 
 - One-to-one chats that arrive live, like any social media DM
 - Unread badges, a count in the browser tab, and a little "boom" ripple when a message lands in another chat
-- Works on phones and computers, in light and dark mode, and can be added to your home screen like an app
+- Notifications when someone messages you, even with Boom Boom closed. Tap one to jump straight into that chat
+- Installs on your home screen like a real app, with an unread count on the icon where the phone supports it
+- Works on phones and computers, in light and dark mode
 - Failed messages stay on screen with a tap-to-retry, and the app catches up on anything it missed after a dropped connection
 
 ## How it works
@@ -20,7 +22,9 @@ GitHub Pages hosts the website. GitHub can only serve files, so the live part ru
              ├─ GitHub Pages site ──►│  Accounts (email + password)    │
  Friend's ───┘   (this repo)         │  Database + security rules      │
  laptop                ◄── live ─────│  Realtime: pushes new messages  │
-                                     └─────────────────────────────────┘
+                                     │  send-push: notifications when  │
+       ◄── notification (via Google/ │  the app is closed              │
+           Apple/Mozilla push) ──────└─────────────────────────────────┘
 ```
 
 The security rules live in the database itself, so they hold even though the website's code is public:
@@ -73,10 +77,29 @@ In this repo on GitHub: **Settings → Pages → Build and deployment → Deploy
 
 Sign in on your phone, sign in as a friend on another device, and send a message. It should appear on the other screen within a second.
 
-## Add it to your home screen
+## Notifications (one-time server setup)
 
-- **iPhone:** open the site in Safari → Share → **Add to Home Screen**
-- **Android:** open it in Chrome → ⋮ menu → **Add to Home screen** (or **Install app**)
+Notifications need one extra piece on Supabase: a small function, `send-push`, that the database calls whenever someone sends a message.
+
+1. **SQL Editor → New query**: paste [`supabase/push.sql`](supabase/push.sql) and **Run**. Run it once.
+2. **Edge Functions → Deploy a new function → Via Editor.** Name it exactly `send-push`. Delete the starter code, paste everything from [`supabase/functions/send-push/index.ts`](supabase/functions/send-push/index.ts), and press **Deploy function**.
+3. **Turn off JWT verification for `send-push`** (in the function's settings it's called *Enforce JWT verification* or *Verify JWT*). The database calls it without logging in. That's safe: the function ignores what it's sent except a message number, looks the message up itself, and only ever notifies about a real message from the last few minutes, once.
+4. **Edge Functions → Secrets**: add `VAPID_PRIVATE_KEY` with the private notification key. It is deliberately not in this repo. Keep it private.
+5. **Check it:** open `https://<your-project>.supabase.co/functions/v1/send-push` in a browser. It should say `"ok": true`. If not, it tells you what's wrong.
+
+Then each person turns notifications on for their own device: Boom Boom shows a **Turn on** banner, or use **Settings → Notifications**.
+
+**Lost the private key?** Make a new pair, put the public half in `config.js` *and* at the top of `send-push/index.ts`, redeploy the function, update the secret, and ask everyone to turn notifications off and on again:
+
+```bash
+node -e 'crypto.subtle.generateKey({name:"ECDSA",namedCurve:"P-256"},true,["sign"]).then(async k=>{const r=new Uint8Array(await crypto.subtle.exportKey("raw",k.publicKey));console.log("public: "+Buffer.from(r).toString("base64url"));console.log("private:",(await crypto.subtle.exportKey("jwk",k.privateKey)).d)})'
+```
+
+## Install it like an app
+
+- **Android:** Boom Boom offers an **Install** button (banner or **Settings → Install the app**). Otherwise: Chrome ⋮ menu → **Install app** / **Add to Home screen**.
+- **iPhone:** in Safari, Share → **Add to Home Screen**, then open Boom Boom from the Home Screen. iPhones only allow website notifications for apps added this way (iOS 16.4 or newer).
+- **Computers:** use the install icon in Chrome or Edge's address bar.
 
 ## Things to know
 
@@ -94,14 +117,15 @@ where email = 'friend@example.com';
 
 **Removing someone.** Deleting a user under **Authentication → Users** also deletes their profile and every message they sent.
 
-**Limits in this version.** One-to-one chats only, text only, up to 4,000 characters per message, no editing or deleting. Phones only get new messages while Boom Boom is open (no push notifications yet).
+**Notifications show the message text** on the lock screen, like most messaging apps. They travel through Google's, Apple's or Mozilla's push service encrypted, so those services can't read them.
+
+**Limits in this version.** One-to-one chats only, text only, up to 4,000 characters per message, no editing or deleting.
 
 ## Ideas for later
 
 - Group chats (the database is already shaped for them)
 - Typing indicators and read receipts
 - Photos
-- Push notifications when the app is closed
 
 ## Files
 
@@ -111,20 +135,33 @@ where email = 'friend@example.com';
 | `style.css` | All the styling, including dark mode |
 | `app.js` | Everything the app does: sign-in, loading chats, sending, live updates |
 | `config.js` | Your Supabase URL and publishable key |
-| `manifest.webmanifest`, `icons/` | Home-screen name and icon |
+| `sw.js` | Service worker: shows notifications and opens the right chat when you tap one |
+| `manifest.webmanifest`, `icons/` | App name and icons for installing |
 | `supabase/schema.sql` | Tables, security rules and helper functions. Run once in Supabase |
-| `supabase/tests/` | Automated checks of the security rules (see below) |
+| `supabase/push.sql` | Notification devices and the trigger that calls send-push. Run once |
+| `supabase/functions/send-push/` | The notification sender (Supabase Edge Function) |
+| `supabase/tests/`, `tests/` | Automated checks (see below) |
 
-## Testing the security rules
+## Testing
 
-`supabase/tests/security_tests.sql` runs 41 checks against the database rules: outsiders can't read or join chats, nobody can send as someone else, logged-out visitors get nothing, and so on. To run them you need a local PostgreSQL (version 15+):
+**Database rules** (63 checks: outsiders can't read or join chats, nobody can send as someone else, devices and notifications stay private, a failing notification never blocks a message...). You need a local PostgreSQL (version 15+):
 
 ```bash
 createdb boomtest
 psql -d boomtest -f supabase/tests/supabase_stub.sql   # imitates a fresh Supabase project
+psql -d boomtest -f supabase/tests/net_stub.sql        # stands in for pg_net
 psql -d boomtest -f supabase/schema.sql
+grep -v 'create extension if not exists pg_net' supabase/push.sql | psql -d boomtest
 psql -d boomtest -f supabase/tests/security_tests.sql  # prints PASS / FAIL for each check
+psql -d boomtest -f supabase/tests/push_tests.sql
 dropdb boomtest
+```
+
+**Notification sender** (encryption checked byte-for-byte against the official RFC 8291 example) and **service worker**, with Node 22+:
+
+```bash
+node --experimental-strip-types supabase/tests/send_push_test.mts
+node tests/sw_test.mjs
 ```
 
 Never run the test files against your real Supabase project.

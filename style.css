@@ -230,6 +230,21 @@ input:focus-visible, textarea:focus-visible { border-color: var(--focus); }
   font-size: 0.85rem;
 }
 
+.nudge {
+  display: grid;
+  gap: 10px;
+  margin: 10px 12px 4px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: var(--active);
+  border-left: 4px solid var(--signal);
+}
+.nudge p { margin: 0; font-size: 0.92rem; font-weight: 700; }
+.nudge-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+#notify-section p, #install-section p { margin: 0; }
+#notify-section .btn, #install-section .btn { justify-self: start; }
+
 /* ---------- Chat list ---------- */
 
 .chat-list {

@@ -11,3 +11,8 @@
 
 export const SUPABASE_URL = 'https://obzxdtgfsyidbnjwpmub.supabase.co';
 export const SUPABASE_KEY = 'sb_publishable___VUtfCyvxTyRhQqdfM9Cg_jMYFrNd3';
+
+// Public half of the notification key (safe to share). Its private half is
+// the VAPID_PRIVATE_KEY secret on the send-push function, and the same public
+// key is written at the top of supabase/functions/send-push/index.ts.
+export const VAPID_PUBLIC_KEY = 'BAr0n88LNFfdaTQQHgQA2mze3juapduWB1LimisUAY9Ugy9Wc7rqeXv-W_xzdNshToCRnWpLk6ZIBDCI55g_Uos';

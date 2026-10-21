@@ -1,9 +1,13 @@
 // Boom Boom — private messaging for a group of friends.
 // Front end only: Supabase stores the messages, checks who's allowed to read
-// them, and pushes new ones to everyone live.
+// them, and pushes new ones to everyone live. A small service worker (sw.js)
+// shows notifications when the app is closed.
 
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
-import { SUPABASE_URL, SUPABASE_KEY } from './config.js';
+import * as config from './config.js';
+
+const { SUPABASE_URL, SUPABASE_KEY } = config;
+const VAPID_KEY = (config.VAPID_PUBLIC_KEY || '').trim();
 
 window.__boomStarted = true;
 
@@ -17,7 +21,7 @@ const GROUP_GAP_MS = 5 * 60 * 1000;
 const USERNAME_RE = /^[a-z0-9_]{3,20}$/;
 const URL_RE = /\bhttps?:\/\/[^\s<>"']+/gi;
 const isTouch = window.matchMedia('(pointer: coarse)').matches;
-const AVATAR_COLOURS = ['#3346B8','#C8174B', '#0F7B6C', '#9A4A00', '#6A3FB5', '#2F6E1F', '#B0306E', '#1F6F9F'];
+const AVATAR_COLOURS = ['#3346B8', '#C8174B','#0F7B6C', '#9A4A00', '#6A3FB5', '#2F6E1F', '#B0306E', '#1F6F9F'];
 
 function h(tag, attrs = {}, ...kids) {
   const el = document.createElement(tag);
@@ -231,6 +235,8 @@ function start() {
   });
 
   wireUi();
+  wireInstallAndNotifications();
+  registerServiceWorker();
 }
 
 async function handleSession(session) {
@@ -278,6 +284,15 @@ async function startApp() {
   closeChat({ quiet: true });
   await loadChats();
   subscribe();
+  renderNudge();
+  resyncNotifications();
+
+  // Opened from a notification: go straight to that chat.
+  const chatFromLink = new URLSearchParams(location.search).get('chat');
+  if (chatFromLink) {
+    history.replaceState(null, '', location.pathname);
+    openChat(chatFromLink);
+  }
 }
 
 function stopApp() {
@@ -289,6 +304,7 @@ function stopApp() {
   $('chat-list').replaceChildren();
   $('message-list').replaceChildren();
   $('conn-banner').hidden = true;
+  $('nudge').hidden = true;
   $('screen-app').classList.remove('show-chat');
   updateTitle();
 }
@@ -534,11 +550,20 @@ function markRead(convId) {
   supabase.rpc('mark_read', { conv: convId }).then(({ error }) => {
     if (error) console.warn('mark_read failed', error);
   });
+  // Clear this chat's notifications now that you've seen it.
+  swReg?.getNotifications?.({ tag: `chat-${convId}` })
+    .then((list) => list.forEach((n) => n.close()))
+    .catch(() => {});
 }
 
 function updateTitle() {
   const total = state.chats.reduce((sum, c) => sum + (c.unread_count || 0), 0);
   document.title = total ? `(${total}) Boom Boom` : 'Boom Boom';
+  // Number on the app icon, where the phone supports it.
+  try {
+    if (total && navigator.setAppBadge) navigator.setAppBadge(total).catch(() => {});
+    else if (navigator.clearAppBadge) navigator.clearAppBadge().catch(() => {});
+  } catch { /* not supported */ }
 }
 
 // ---------------------------------------------------------------------
@@ -670,6 +695,11 @@ async function openChat(convId) {
 
   if (!activeChat()) await loadChats();
   if (state.activeId !== convId) return;
+  if (!activeChat()) {
+    state.activeId = null;
+    toast("That chat isn't available.");
+    return;
+  }
 
   $('conversation-empty').hidden = true;
   $('conversation-inner').hidden = false;
@@ -857,7 +887,280 @@ function openSettings() {
   pw.username.value = state.user.email || '';
   formMessage(pw, 'none');
   $('settings-email').textContent = `Signed in as ${state.user.email}`;
+  renderInstall();
+  renderNotifySettings();
   $('dlg-settings').showModal();
+}
+
+// ---------------------------------------------------------------------
+//  Installing the app, and notifications
+// ---------------------------------------------------------------------
+
+const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent)
+  || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const isAndroid = /Android/.test(navigator.userAgent);
+const NUDGE_KEY = 'boom-nudge-hidden-until';
+let swReg = null;
+let installEvent = null;
+
+function isStandalone() {
+  return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+}
+
+function bytesFromB64url(text) {
+  const b64 = text.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((text.length + 3) % 4);
+  return Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+}
+
+async function registerServiceWorker() {
+  if (!('serviceWorker' in navigator)) return;
+  navigator.serviceWorker.addEventListener('message', (e) => {
+    if (e.data?.type === 'open-chat' && e.data.conversation_id && state.started) openChat(e.data.conversation_id);
+  });
+  try {
+    swReg = await navigator.serviceWorker.register('./sw.js');
+  } catch (error) {
+    console.warn('Service worker not registered', error);
+  }
+  if (state.started) {
+    renderNudge();
+    resyncNotifications();
+  }
+}
+
+// 'ready' | 'not-configured' | 'ios-needs-install' | 'unsupported' | 'blocked'
+function notifyState() {
+  if (!VAPID_KEY) return 'not-configured';
+  const supported = 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+  if (!supported) return isIOS && !isStandalone() ? 'ios-needs-install' : 'unsupported';
+  if (Notification.permission === 'denied') return 'blocked';
+  return 'ready';
+}
+
+async function currentPushSubscription() {
+  if (!swReg?.pushManager) return null;
+  try {
+    return await swReg.pushManager.getSubscription();
+  } catch {
+    return null;
+  }
+}
+
+async function savePushSubscription(sub) {
+  const json = sub.toJSON();
+  const { error } = await supabase.rpc('save_push_subscription', {
+    p_endpoint: json.endpoint,
+    p_p256dh: json.keys.p256dh,
+    p_auth: json.keys.auth,
+    p_user_agent: navigator.userAgent.slice(0, 300),
+  });
+  if (error) throw error;
+}
+
+async function enableNotifications() {
+  const reg = swReg || await navigator.serviceWorker.ready;
+  const options = { userVisibleOnly: true, applicationServerKey: bytesFromB64url(VAPID_KEY) };
+  let sub;
+  try {
+    sub = await reg.pushManager.subscribe(options); // asks for permission if needed
+  } catch (error) {
+    if (error?.name !== 'InvalidStateError') throw error;
+    // Subscribed with an old key: start fresh.
+    const old = await reg.pushManager.getSubscription();
+    if (old) await old.unsubscribe();
+    sub = await reg.pushManager.subscribe(options);
+  }
+  try {
+    await savePushSubscription(sub);
+  } catch (error) {
+    await sub.unsubscribe().catch(() => {});
+    throw error;
+  }
+}
+
+async function disableNotifications() {
+  const sub = await currentPushSubscription();
+  if (!sub) return;
+  await supabase.from('push_subscriptions').delete().eq('endpoint', sub.endpoint);
+  await sub.unsubscribe().catch(() => {});
+}
+
+// Before signing out: stop this device getting this account's notifications.
+async function forgetThisDevice() {
+  const sub = await currentPushSubscription();
+  if (!sub) return;
+  await supabase.from('push_subscriptions').delete().eq('endpoint', sub.endpoint).then(() => {}, () => {});
+}
+
+// Keep the server's copy of this device up to date (e.g. after signing in again).
+async function resyncNotifications() {
+  if (!state.started || notifyState() !== 'ready' || Notification.permission !== 'granted') return;
+  try {
+    const sub = await currentPushSubscription();
+    if (sub) await savePushSubscription(sub);
+    else if (swReg) await enableNotifications(); // permission already given, so no prompt
+  } catch (error) {
+    console.warn('Could not refresh notifications', error);
+  }
+}
+
+function notifyErrorText(error) {
+  if (error?.name === 'NotAllowedError') return "Notifications weren't allowed. Tap the button again and choose Allow.";
+  if (isMissingSchema(error)) return "Boom Boom's notification setup isn't finished on the server yet (push.sql).";
+  if (isNetworkError(error)) return "Couldn't reach the server. Check your connection and try again.";
+  return `Couldn't turn on notifications: ${error?.message || 'unknown error'}`;
+}
+
+async function renderNotifySettings() {
+  const status = $('notify-status');
+  const button = $('btn-notify');
+  $('notify-error').hidden = true;
+  button.hidden = true;
+
+  const st = notifyState();
+  if (st === 'not-configured') {
+    status.textContent = "Notifications haven't been switched on for Boom Boom yet.";
+  } else if (st === 'ios-needs-install') {
+    status.textContent = 'On iPhone, notifications work once Boom Boom is on your Home Screen. Add it (see below), open it from there, then turn them on.';
+  } else if (st === 'unsupported') {
+    status.textContent = "This browser can't show notifications. Try Chrome, Edge, Firefox or Safari.";
+  } else if (st === 'blocked') {
+    status.textContent = "Notifications are blocked for Boom Boom. Allow them in your browser's site settings (or your phone's settings for the app), then come back here.";
+  } else {
+    const on = Notification.permission === 'granted' && !!(await currentPushSubscription());
+    status.textContent = on
+      ? "On for this device. You'll be notified when someone messages you and Boom Boom isn't open."
+      : 'Get a notification when someone messages you, even when Boom Boom is closed.';
+    button.textContent = on ? 'Turn off on this device' : 'Turn on notifications';
+    button.className = on ? 'btn ghost' : 'btn primary';
+    button.dataset.action = on ? 'off' : 'on';
+    button.hidden = false;
+  }
+}
+
+function renderInstall() {
+  const status = $('install-status');
+  const button = $('btn-install');
+  button.hidden = true;
+  if (isStandalone()) {
+    status.textContent = "Boom Boom is installed. You're using the app right now.";
+  } else if (installEvent) {
+    status.textContent = 'Add Boom Boom to your home screen so it opens like any other app.';
+    button.hidden = false;
+  } else if (isIOS) {
+    status.textContent = 'Tap the Share button (the square with an arrow), then Add to Home Screen. After that, open Boom Boom from your Home Screen.';
+  } else if (isAndroid) {
+    status.textContent = 'Open your browser menu (⋮) and choose Install app or Add to Home screen.';
+  } else {
+    status.textContent = "Use the install button in your browser's address bar or menu.";
+  }
+}
+
+async function promptInstall() {
+  if (!installEvent) return;
+  const event = installEvent;
+  installEvent = null;
+  event.prompt();
+  await event.userChoice.catch(() => {});
+  renderInstall();
+  renderNudge();
+}
+
+// A small banner in the chat list suggesting the next useful step.
+async function renderNudge() {
+  const el = $('nudge');
+  if (!state.started) { el.hidden = true; return; }
+  let hiddenUntil = 0;
+  try { hiddenUntil = Number(localStorage.getItem(NUDGE_KEY)) || 0; } catch { /* private mode */ }
+
+  let text = '';
+  let label = '';
+  let action = '';
+  const st = notifyState();
+  if (st === 'ready' && Notification.permission === 'default') {
+    text = 'Get a buzz when friends message you, even with Boom Boom closed.';
+    label = 'Turn on';
+    action = 'notify';
+  } else if (st === 'ios-needs-install') {
+    text = 'Add Boom Boom to your Home Screen to get notifications on iPhone.';
+    label = 'Show me';
+    action = 'settings';
+  } else if (installEvent && !isStandalone()) {
+    text = 'Install Boom Boom so it opens like an app.';
+    label = 'Install';
+    action = 'install';
+  }
+
+  if (!action || Date.now() < hiddenUntil) { el.hidden = true; return; }
+  $('nudge-text').textContent = text;
+  const go = $('nudge-go');
+  go.textContent = label;
+  go.dataset.action = action;
+  el.hidden = false;
+}
+
+function wireInstallAndNotifications() {
+  window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault(); // we show our own Install button instead
+    installEvent = e;
+    renderInstall();
+    renderNudge();
+  });
+  window.addEventListener('appinstalled', () => {
+    installEvent = null;
+    renderInstall();
+    renderNudge();
+    toast('Boom Boom is installed. Open it from your home screen.');
+  });
+
+  $('btn-install').addEventListener('click', promptInstall);
+
+  $('btn-notify').addEventListener('click', async () => {
+    const button = $('btn-notify');
+    const turnOn = button.dataset.action === 'on';
+    setBusy(button, true);
+    try {
+      if (turnOn) await enableNotifications();
+      else await disableNotifications();
+      await renderNotifySettings();
+    } catch (error) {
+      await renderNotifySettings();
+      if (Notification.permission !== 'denied') { // if blocked, the status already explains
+        const err = $('notify-error');
+        err.textContent = notifyErrorText(error);
+        err.hidden = false;
+      }
+    } finally {
+      setBusy(button, false);
+      renderNudge();
+    }
+  });
+
+  $('nudge-go').addEventListener('click', async () => {
+    const button = $('nudge-go');
+    const action = button.dataset.action;
+    if (action === 'install') return promptInstall();
+    if (action === 'settings') {
+      openSettings();
+      $('install-section').scrollIntoView({ block: 'start' });
+      return;
+    }
+    setBusy(button, true);
+    try {
+      await enableNotifications();
+      toast("Notifications are on. You'll get a buzz when someone messages you.");
+    } catch (error) {
+      toast(notifyErrorText(error));
+    } finally {
+      setBusy(button, false);
+      renderNudge();
+    }
+  });
+
+  $('nudge-later').addEventListener('click', () => {
+    try { localStorage.setItem(NUDGE_KEY, String(Date.now() + 7 * 24 * 60 * 60 * 1000)); } catch { /* private mode */ }
+    $('nudge').hidden = true;
+  });
 }
 
 function readProfileForm(form) {
@@ -926,7 +1229,10 @@ function wireUi() {
     state.me = data;
     await startApp();
   });
-  $('profile-signout').addEventListener('click', () => supabase.auth.signOut());
+  $('profile-signout').addEventListener('click', async () => {
+    await forgetThisDevice();
+    await supabase.auth.signOut();
+  });
 
   // Chat list
   $('chat-list').addEventListener('click', (e) => {
@@ -1044,6 +1350,7 @@ function wireUi() {
 
   $('btn-signout').addEventListener('click', async () => {
     $('dlg-settings').close();
+    await forgetThisDevice();
     await supabase.auth.signOut();
   });
 

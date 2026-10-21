@@ -8,8 +8,12 @@
   <meta name="theme-color" content="#EEF0F7" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#0F1124" media="(prefers-color-scheme: dark)">
   <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
-  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/icon-180.png">
   <link rel="manifest" href="manifest.webmanifest">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Boom Boom">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=Unbounded:wght@600;800&display=swap">
@@ -89,6 +93,13 @@
         </button>
       </header>
       <p id="conn-banner" class="conn-banner" role="status" hidden>Reconnecting… new messages will appear when you're back online.</p>
+      <div id="nudge" class="nudge" hidden>
+        <p id="nudge-text"></p>
+        <div class="nudge-actions">
+          <button id="nudge-go" class="btn primary small" type="button"></button>
+          <button id="nudge-later" class="btn ghost small" type="button">Not now</button>
+        </div>
+      </div>
       <ul id="chat-list" class="chat-list"></ul>
       <div id="chat-list-empty" class="empty" hidden>
         <p>No chats yet.</p>
@@ -151,6 +162,19 @@
       </button>
     </header>
     <div class="sheet-body">
+      <section class="form" id="notify-section" aria-labelledby="notify-title">
+        <h3 id="notify-title">Notifications</h3>
+        <p id="notify-status" class="muted"></p>
+        <p id="notify-error" class="form-error" role="alert" hidden></p>
+        <button id="btn-notify" class="btn primary" type="button" hidden>Turn on notifications</button>
+      </section>
+
+      <section class="form" id="install-section" aria-labelledby="install-title">
+        <h3 id="install-title">Install the app</h3>
+        <p id="install-status" class="muted"></p>
+        <button id="btn-install" class="btn primary" type="button" hidden>Install Boom Boom</button>
+      </section>
+
       <form id="settings-profile-form" class="form" novalidate>
         <h3>Your profile</h3>
         <label>Display name
