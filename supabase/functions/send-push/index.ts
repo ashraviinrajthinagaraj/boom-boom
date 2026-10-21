@@ -161,6 +161,16 @@ export async function sendPush(device: Device, payload: string, vapid: Vapid, fe
   });
 }
 
+// What a notification says for each kind of message.
+export function label(msg: Record<string, unknown>, text: string): string {
+  const album = Array.isArray(msg.album) ? msg.album.length : 0;
+  if (album > 1) return text ? `📷 ${album} photos: ${text}` : `📷 ${album} photos`;
+  if (msg.photo_path) return text ? `📷 ${text}` : "📷 Photo";
+  if (msg.file_path) return `📎 ${preview(String(msg.file_name ?? "File"))}`;
+  if (msg.sticker_path) return "Sticker";
+  return text;
+}
+
 function preview(text: string): string {
   const chars = Array.from(text.replace(/\s+/g, " ").trim()); // keeps emoji whole
   return chars.length > PREVIEW_CHARS ? chars.slice(0, PREVIEW_CHARS - 1).join("") + "…" : chars.join("");
@@ -204,11 +214,11 @@ export async function handleMessage(messageId: unknown, deps: { db: any; vapid: 
 
   const name = senderRes.data?.display_name ?? "Someone";
   const conv = convRes.data;
-  // Photos are never put in notifications, only a "📷 Photo" label.
+  // Photos, files and stickers are never put in notifications, only a label.
   const text = preview(msg.body ?? "");
   const payload = JSON.stringify({
     title: conv?.is_group && conv?.title ? `${name} in ${conv.title}` : name,
-    body: msg.photo_path ? (text ? `📷 ${text}` : "📷 Photo") : text,
+    body: label(msg, text),
     conversation_id: msg.conversation_id,
     message_id: msg.id,
   });

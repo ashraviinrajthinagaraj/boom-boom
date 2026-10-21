@@ -5,7 +5,8 @@
 
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
 import * as config from './config.js';
-import { preparePhoto, makeAvatar } from './photo.js';
+import { preparePhoto, makeAvatar, makeWallpaper } from './photo.js';
+import { Editor, COLOURS, BRUSHES, photoItem, blankItem, isEdited, exportItem, releasePreview, paint } from './editor.js';
 
 const { SUPABASE_URL, SUPABASE_KEY } = config;
 const VAPID_KEY = (config.VAPID_PUBLIC_KEY || '').trim();
@@ -26,6 +27,7 @@ const REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🔥'];
 const MSG_COLUMNS_V1 = 'id, conversation_id, sender_id, body, created_at';
 const MSG_COLUMNS_V2 = `${MSG_COLUMNS_V1}, reply_to, photo_path, photo_thumb_path, photo_width, photo_height, deleted_at`;
 const MSG_COLUMNS_V4 = `${MSG_COLUMNS_V2}, edited_at`;
+const MSG_COLUMNS_V6 = `${MSG_COLUMNS_V4}, album, file_path, file_name, file_size, file_type, sticker_path`;
 // Chat colours: bubbles, send button and accents (all pass contrast with white text).
 const THEMES = {
   hibiscus: '#C8174B', ocean: '#1F5FCC', jungle: '#1D7A4C', sunset: '#C2410C',
@@ -259,6 +261,9 @@ const state = {
   later: false,          // send later + nicknames set up on the server?
   nicknames: new Map(),  // user id -> your private nickname for them
   scheduled: new Map(),  // conversation id -> [your waiting scheduled messages]
+  media: false,          // albums, files, stickers, wallpapers set up on the server?
+  stickers: [],          // your sticker tray: [{ id, path }]
+  wallpapers: new Map(), // conversation id -> 'pattern:dots' or 'photo:<file>'
   channel: null,
   live: false,
   started: false,
@@ -288,25 +293,30 @@ function resetState() {
   state.later = false;
   state.nicknames = new Map();
   state.scheduled = new Map();
+  state.media = false;
+  state.stickers = [];
+  state.wallpapers = new Map();
   state.live = false;
   state.started = false;
 }
 
-const msgColumns = () => (state.extras ? MSG_COLUMNS_V4 : state.features ? MSG_COLUMNS_V2 : MSG_COLUMNS_V1);
+const msgColumns = () => (state.media ? MSG_COLUMNS_V6 : state.extras ? MSG_COLUMNS_V4 : state.features ? MSG_COLUMNS_V2 : MSG_COLUMNS_V1);
 
 // Which setup files have been run? (The app keeps working without them.)
 async function detectFeatures() {
-  const [v2, v3, v4, v5] = await Promise.all([
+  const [v2, v3, v4, v5, v6] = await Promise.all([
     supabase.from('messages').select('deleted_at').limit(1),
     supabase.from('profiles').select('avatar_path').limit(1),
     supabase.from('messages').select('edited_at').limit(1),
     supabase.from('nicknames').select('target_id').limit(1),
+    supabase.from('stickers').select('id').limit(1),
   ]);
   // Each setup file builds on the one before it.
   state.features = !v2.error;
   state.avatars = state.features && !v3.error;
   state.extras = state.avatars && !v4.error;
   state.later = state.extras && !v5.error;
+  state.media = state.later && !v6.error;
   $('btn-attach').hidden = !state.features;
   $('btn-chat-menu').hidden = !state.avatars && !state.extras;
   $('chat-delete-section').hidden = !state.avatars;
@@ -317,6 +327,10 @@ async function detectFeatures() {
   $('tips-section').hidden = !state.features;
   $('tip-later').hidden = !state.later;
   $('tip-nickname').hidden = !state.later;
+  $('tip-media').hidden = !state.features;
+  $('att-sticker').hidden = !state.media;
+  $('att-file').hidden = !state.media;
+  $('chat-wall-section').hidden = !state.media;
 }
 
 // ---------------------------------------------------------------------
@@ -339,6 +353,7 @@ function start() {
   wireProfilePictureAndChatOptions();
   wireExtras();
   wireLaterAndNicknames();
+  wireMedia();
   registerServiceWorker();
   initAutoUpdate();
 }
@@ -360,6 +375,7 @@ async function handleSession(session) {
     await detectFeatures();
     await loadProfiles();
     await loadNicknames();
+    await loadWallpapers();
   } catch (error) {
     currentUserId = null;
     showBootError(explainLoadError(error));
@@ -394,6 +410,7 @@ async function startApp() {
   renderNudge();
   resyncNotifications();
   loadMemory();
+  setTimeout(maybeShowWhatsNew, 700);
 
   // Opened from a notification: go straight to that chat.
   const chatFromLink = new URLSearchParams(location.search).get('chat');
@@ -530,7 +547,7 @@ async function loadQuoted(convId, msgs) {
   const have = new Set((state.messages.get(convId) || []).map((m) => m.id));
   const missing = [...new Set(msgs.map((m) => m.reply_to).filter((id) => id && !have.has(id) && !state.quoted.has(id)))];
   if (!missing.length) return;
-  const { data } = await supabase.from('messages').select(MSG_COLUMNS_V2).in('id', missing);
+  const { data } = await supabase.from('messages').select(msgColumns()).in('id', missing);
   const since = time(clearedAt(convId));
   for (const m of data || []) {
     if (time(m.created_at) > since) state.quoted.set(m.id, m); // deleted-chat history stays hidden
@@ -626,6 +643,7 @@ async function resync() {
   resyncing = true;
   try {
     await loadNicknames();
+    await loadWallpapers();
     await loadChats();
     if (state.activeId) {
       const id = state.activeId;
@@ -680,7 +698,7 @@ function onIncoming(m) {
 
   if (!mine) {
     const name = shownName(m.sender_id);
-    const what = m.photo_path ? 'sent a photo' : plainText(m.body);
+    const what = m.photo_path ? 'sent a photo' : m.file_path ? `sent a file, ${m.file_name}` : m.sticker_path ? 'sent a sticker' : plainText(m.body);
     announce(m.conversation_id === state.activeId ? `${name}: ${what}` : `New message from ${name}`);
   }
 }
@@ -741,14 +759,17 @@ function dropMatchingPending(list, m) {
 
 function messageKind(m) {
   if (m.deleted_at) return 'unsent';
+  if (Array.isArray(m.album)) return 'album';
   if (m.photo_path) return 'photo';
+  if (m.file_path) return 'file';
+  if (m.sticker_path) return 'sticker';
   return 'text';
 }
 
 function updateChatPreview(m, countAsUnread) {
   const chat = state.chats.find((c) => c.conversation_id === m.conversation_id);
   if (!chat) return;
-  chat.last_message_body = m.body;
+  chat.last_message_body = m.file_path ? m.file_name : m.body;
   chat.last_message_sender = m.sender_id;
   chat.last_message_kind = messageKind(m);
   chat.last_message_at = m.created_at;
@@ -815,6 +836,9 @@ function previewText(kind, body, senderId) {
   const text = plainText(body).replace(/\s+/g, ' ').trim();
   if (kind === 'unsent') return mine ? 'You unsent a message' : 'Message unsent';
   if (kind === 'photo') return (mine ? 'You: ' : '') + (text ? `📷 ${text}` : '📷 Photo');
+  if (kind === 'album') return (mine ? 'You: ' : '') + (text ? `📷 ${text}` : '📷 Photos');
+  if (kind === 'file') return (mine ? 'You: ' : '') + `📎 ${(body || 'File').replace(/\s+/g, ' ')}`;
+  if (kind === 'sticker') return mine ? 'You sent a sticker' : 'Sticker';
   if (!text) return 'No messages yet';
   return (mine ? 'You: ' : '') + text;
 }
@@ -824,7 +848,11 @@ function snippet(m) {
   if (!m) return 'Original message';
   if (m.deleted_at) return 'Message unsent';
   const text = plainText(m.body).replace(/\s+/g, ' ').trim();
+  const album = Array.isArray(m.album) ? m.album.length : 0;
+  if (album > 1) return text ? `📷 ${album} photos: ${text}` : `📷 ${album} photos`;
   if (m.photo_path) return text ? `📷 ${text}` : '📷 Photo';
+  if (m.file_path || m.file_local) return `📎 ${m.file_name || 'File'}`;
+  if (m.sticker_path) return 'Sticker';
   return text;
 }
 
@@ -937,8 +965,13 @@ function messageEl(m, grouped, tail) {
   if (m.pending) classes.push('pending');
   if (m.failed) classes.push('failed');
   if (unsent) classes.push('unsent');
-  const photo = m.photo_thumb_path || m.photo_local;
-  if (photo && !unsent) classes.push('has-photo');
+  const albumCount = m.album_local ? m.album_local.length : Array.isArray(m.album) ? m.album.length : 0;
+  const photo = !albumCount && (m.photo_thumb_path || m.photo_local);
+  const isFile = !!(m.file_path || m.file_local);
+  if ((photo || albumCount) && !unsent) classes.push('has-photo');
+  if (albumCount && !unsent) classes.push('has-album');
+  if (isFile && !unsent) classes.push('has-file');
+  if (m.sticker_path && !unsent) classes.push('sticker');
 
   const bubble = h('div', { class: classes.join(' '), 'data-id': m.id });
 
@@ -968,6 +1001,9 @@ function messageEl(m, grouped, tail) {
         onclick: (e) => { if (!local) { e.stopPropagation(); tapped(m, bubble, () => openViewer(m)); } },
       }, img));
     }
+    if (albumCount) bubble.append(albumEl(m, bubble, local));
+    if (isFile) bubble.append(fileCardEl(m, bubble, local));
+    if (m.sticker_path) bubble.append(stickerImgEl(m.sticker_path));
     if (m.body) {
       const body = h('span', { class: 'msg-body' });
       appendLinkified(body, m.body);
@@ -976,7 +1012,9 @@ function messageEl(m, grouped, tail) {
   }
 
   let meta = clockTime(m.created_at) + (m.edited_at && !unsent ? ' (edited)' : '');
-  if (m.pending) meta = m.upload || m.preparing ? 'Sending photo…' : 'Sending…';
+  if (m.pending) {
+    meta = m.album_local ? 'Sending photos…' : m.upload || m.preparing ? 'Sending photo…' : m.fileBlob ? 'Sending file…' : 'Sending…';
+  }
   if (m.failed) meta = 'Not sent. Tap to retry.';
   bubble.append(h('span', { class: 'msg-meta' }, meta));
 
@@ -1150,6 +1188,7 @@ async function openChat(convId) {
 
   joinTyping(convId);
   applyTheme();
+  applyWallpaper();
   renderChatHeader();
   renderChatList();
 
@@ -1178,6 +1217,7 @@ function closeChat({ quiet = false } = {}) {
   clearReply();
   leaveTyping();
   state.activeId = null;
+  applyWallpaper();
   $('screen-app').classList.remove('show-chat');
   $('conversation-inner').hidden = true;
   $('conversation-empty').hidden = false;
@@ -1257,6 +1297,7 @@ function settle(temp, data, error) {
 async function deliver(temp) {
   const row = { conversation_id: temp.conversation_id, body: temp.body };
   if (temp.reply_to) row.reply_to = temp.reply_to;
+  if (temp.sticker_path) row.sticker_path = temp.sticker_path;
   const { data, error } = await supabase.from('messages').insert(row).select(msgColumns()).single();
   settle(temp, data, error);
 }
@@ -1270,7 +1311,9 @@ function retry(m) {
   m.pending = true;
   list.push(m);
   renderMessages(true);
-  if (m.upload) deliverPhoto(m);
+  if (m.uploads) deliverAlbum(m);
+  else if (m.upload) deliverPhoto(m);
+  else if (m.fileBlob) deliverFile(m);
   else deliver(m);
 }
 
@@ -1278,31 +1321,162 @@ function retry(m) {
 //  Photos
 // ---------------------------------------------------------------------
 
-async function sendPhotos(files) {
-  const convId = state.activeId;
-  if (!convId || !files.length) return;
-  const temps = [...files].map((file) => ({ file, temp: newTemp(convId, { preparing: true }) }));
+// Sends what was picked on the edit screen: one album (2+ photos, once
+// media-extras.sql is set up) or photos one at a time. Untouched photos keep
+// their full original quality; edited ones are saved as a high-quality JPEG
+// (doodles as PNG). Either way, hidden details are removed first.
+async function sendItems(convId, items, caption = '') {
+  if (!convId || !items.length) return;
+  if (state.media && items.length > 1) {
+    const temp = newTemp(convId, { body: caption, preparing: true, album_local: items.map(() => null) });
+    clearReply();
+    renderMessages(true);
+    const uploads = [];
+    const locals = [];
+    for (const [i, item] of items.entries()) {
+      try {
+        const upload = await preparePhoto(await finishedFile(item));
+        uploads.push(upload);
+        locals.push(URL.createObjectURL(upload.thumb));
+      } catch (error) {
+        toast(error?.message || "Couldn't read one of the photos.");
+      } finally {
+        releaseItem(item);
+      }
+      temp.album_local = [...locals, ...items.slice(i + 1).map(() => null)];
+      if (state.activeId === convId) renderMessages();
+    }
+    temp.preparing = false;
+    if (uploads.length > 1) {
+      temp.uploads = uploads;
+      temp.album_local = locals;
+      if (state.activeId === convId) renderMessages(true);
+      await deliverAlbum(temp);
+      return;
+    }
+    // Only one photo could be read: send it on its own.
+    delete temp.album_local;
+    if (!uploads.length) {
+      dropTemp(temp);
+      return;
+    }
+    Object.assign(temp, { upload: uploads[0], photo_local: locals[0], photo_width: uploads[0].width, photo_height: uploads[0].height });
+    if (state.activeId === convId) renderMessages(true);
+    await deliverPhoto(temp);
+    return;
+  }
+
+  const temps = items.map((item, i) => ({ item, temp: newTemp(convId, { preparing: true, body: i === 0 ? caption : '' }) }));
   clearReply();
   renderMessages(true);
-  for (const { file, temp } of temps) {
+  for (const { item, temp } of temps) {
     try {
-      // Strips location and camera details; keeps full quality (see photo.js).
-      temp.upload = await preparePhoto(file);
+      temp.upload = await preparePhoto(await finishedFile(item));
       temp.preparing = false;
       temp.photo_local = URL.createObjectURL(temp.upload.thumb);
       temp.photo_width = temp.upload.width;
       temp.photo_height = temp.upload.height;
     } catch (error) {
-      const list = state.messages.get(convId) || [];
-      const i = list.indexOf(temp);
-      if (i !== -1) list.splice(i, 1);
-      if (state.activeId === convId) renderMessages();
+      dropTemp(temp);
       toast(error?.message || "Couldn't read that photo.");
       continue;
+    } finally {
+      releaseItem(item);
     }
     if (state.activeId === convId) renderMessages(true);
     await deliverPhoto(temp);
   }
+}
+
+function dropTemp(temp) {
+  const list = state.messages.get(temp.conversation_id) || [];
+  const i = list.indexOf(temp);
+  if (i !== -1) list.splice(i, 1);
+  if (state.activeId === temp.conversation_id) renderMessages();
+}
+
+// The picture to send: the original if untouched, otherwise the edited one.
+async function finishedFile(item) {
+  if (!isEdited(item)) return item.file;
+  const type = item.blank ? 'image/png' : 'image/jpeg';
+  const blob = await exportItem(item, { type });
+  return new File([blob], item.blank ? 'doodle.png' : 'photo.jpg', { type });
+}
+
+function releaseItem(item) {
+  releasePreview(item);
+  if (item.url) URL.revokeObjectURL(item.url);
+  if (item.thumbUrl) URL.revokeObjectURL(item.thumbUrl);
+  item.url = null;
+  item.thumbUrl = null;
+}
+
+async function deliverAlbum(temp) {
+  const convId = temp.conversation_id;
+  const bucket = supabase.storage.from('photos');
+  const uploaded = [];
+  let data = null;
+  let error = null;
+  const album = [];
+  try {
+    for (const u of temp.uploads) {
+      const id = crypto.randomUUID();
+      const path = `${convId}/${id}.${u.ext}`;
+      const thumb = `${convId}/${id}-thumb.jpg`;
+      const a = await bucket.upload(path, u.original, { contentType: u.mime, upsert: false, cacheControl: '31536000' });
+      if (a.error) throw a.error;
+      uploaded.push(path);
+      const b = await bucket.upload(thumb, u.thumb, { contentType: 'image/jpeg', upsert: false, cacheControl: '31536000' });
+      if (b.error) throw b.error;
+      uploaded.push(thumb);
+      album.push({ path, thumb, width: u.width, height: u.height });
+    }
+    const row = {
+      conversation_id: convId,
+      body: temp.body || '',
+      photo_path: album[0].path,
+      photo_thumb_path: album[0].thumb,
+      photo_width: album[0].width,
+      photo_height: album[0].height,
+      album,
+    };
+    if (temp.reply_to) row.reply_to = temp.reply_to;
+    const res = await supabase.from('messages').insert(row).select(msgColumns()).single();
+    if (res.error) throw res.error;
+    data = res.data;
+  } catch (e) {
+    error = e;
+    if (uploaded.length) bucket.remove(uploaded).catch(() => {}); // don't leave half-sent files behind
+  }
+  if (!error) {
+    album.forEach((a, i) => state.photoUrls.set(`photos:${a.thumb}`, Promise.resolve(temp.album_local[i])));
+  }
+  settle(temp, data, error);
+  if (error) toast(error?.statusCode === '413' || /exceeded|too large|size/i.test(error?.message || '')
+    ? 'One of those photos is too big for the free storage plan.'
+    : "Photos didn't send. Tap them to try again.");
+}
+
+function albumEl(m, bubble, local) {
+  const thumbs = m.album_local || m.album.map((a) => a.thumb);
+  const n = thumbs.length;
+  const shown = Math.min(n, 4);
+  const grid = h('div', { class: `msg-album n${shown}` });
+  for (let i = 0; i < shown; i++) {
+    const img = h('img', { alt: '', decoding: 'async' });
+    if (m.album_local) {
+      if (thumbs[i]) img.src = thumbs[i];
+    } else {
+      photoUrl(thumbs[i]).then((url) => { img.src = url; }, () => { img.alt = "Photo couldn't load"; });
+    }
+    grid.append(h('button', {
+      type: 'button',
+      class: 'album-tile',
+      'aria-label': `Open photo ${i + 1} of ${n}`,
+      onclick: (e) => { if (!local) { e.stopPropagation(); tapped(m, bubble, () => openViewer(m, i)); } },
+    }, img, i === 3 && n > 4 ? h('span', { class: 'album-more', 'aria-hidden': 'true' }, `+${n - 3}`) : null));
+  }
+  return grid;
 }
 
 async function deliverPhoto(temp) {
@@ -1324,7 +1498,7 @@ async function deliverPhoto(temp) {
     uploaded.push(thumbPath);
     const row = {
       conversation_id: convId,
-      body: '',
+      body: temp.body || '',
       photo_path: photoPath,
       photo_thumb_path: thumbPath,
       photo_width: temp.upload.width,
@@ -1348,31 +1522,56 @@ async function deliverPhoto(temp) {
     : "Photo didn't send. Tap it to try again.");
 }
 
-// Full-size viewer.
-async function openViewer(m) {
+// Full-size viewer. For an album, swipe or use the arrows to see the rest.
+let viewer = { m: null, list: [], index: 0, token: 0 };
+
+function openViewer(m, index = 0) {
+  const list = Array.isArray(m.album) && m.album.length ? m.album : [{ path: m.photo_path, thumb: m.photo_thumb_path }];
+  viewer = { m, list, index: Math.min(Math.max(0, index), list.length - 1), token: viewer.token };
   const dlg = $('dlg-photo');
+  if (!dlg.open) dlg.showModal();
+  showViewerPhoto();
+}
+
+async function showViewerPhoto() {
+  const { m, list, index } = viewer;
+  const token = ++viewer.token;
+  const item = list[index];
   const img = $('viewer-img');
   const save = $('viewer-save');
   const status = $('viewer-status');
+  const many = list.length > 1;
+  $('viewer-count').hidden = !many;
+  $('viewer-count').textContent = `${index + 1} of ${list.length}`;
+  $('viewer-prev').hidden = !many || index === 0;
+  $('viewer-next').hidden = !many || index === list.length - 1;
   img.removeAttribute('src');
+  img.alt = many ? `Photo ${index + 1} of ${list.length}` : 'Photo';
   save.hidden = true;
   status.hidden = false;
   status.textContent = 'Loading full photo…';
-  dlg.showModal();
   try {
-    img.src = await photoUrl(m.photo_thumb_path); // quick preview first
+    const quick = await photoUrl(item.thumb); // quick preview first
+    if (token === viewer.token) img.src = quick;
   } catch { /* the full photo below may still work */ }
   try {
-    const url = await photoUrl(m.photo_path);
-    if (!dlg.open) return;
+    const url = await photoUrl(item.path);
+    if (token !== viewer.token || !$('dlg-photo').open) return;
     img.src = url;
     save.href = url;
-    save.download = `boom-boom-${new Date(m.created_at).toISOString().slice(0, 10)}-${m.id}.${m.photo_path.split('.').pop()}`;
+    save.download = `boom-boom-${new Date(m.created_at).toISOString().slice(0, 10)}-${m.id}${many ? `-${index + 1}` : ''}.${item.path.split('.').pop()}`;
     save.hidden = false;
     status.hidden = true;
   } catch {
-    status.textContent = "Couldn't load the full photo. Check your connection.";
+    if (token === viewer.token) status.textContent = "Couldn't load the full photo. Check your connection.";
   }
+}
+
+function stepViewer(step) {
+  const next = viewer.index + step;
+  if (next < 0 || next >= viewer.list.length) return;
+  viewer.index = next;
+  showViewerPhoto();
 }
 
 // ---------------------------------------------------------------------
@@ -1402,6 +1601,9 @@ function openMessageMenu(m) {
   $('act-reply').hidden = !state.features;
   $('act-copy').hidden = !m.body;
   $('act-photo').hidden = !m.photo_path;
+  $('act-photo').textContent = Array.isArray(m.album) ? 'View photos' : 'View full photo';
+  $('act-download').hidden = !m.file_path;
+  $('act-save-sticker').hidden = !state.media || !m.sticker_path || state.stickers.some((s) => s.path === m.sticker_path);
   $('act-edit').hidden = !canEdit(m);
   $('act-unsend').hidden = !state.features || !mine;
   resetUnsend();
@@ -1445,6 +1647,7 @@ function clearReply() {
 }
 
 async function unsend(m) {
+  const sentFile = m.file_path;
   const { data, error } = await supabase.rpc('unsend_message', { p_message_id: m.id });
   if (error) {
     toast(isNetworkError(error) ? "Couldn't unsend. Check your connection." : error.message);
@@ -1456,7 +1659,11 @@ async function unsend(m) {
     const { error: removeError } = await supabase.storage.from('photos').remove(files);
     if (removeError) console.warn('Photo files not removed', removeError);
   }
-  Object.assign(m, { body: '', photo_path: null, photo_thumb_path: null, deleted_at: new Date().toISOString() });
+  if (sentFile) supabase.storage.from('files').remove([sentFile]).catch(() => {});
+  Object.assign(m, {
+    body: '', photo_path: null, photo_thumb_path: null, album: null, file_path: null, file_name: null,
+    file_size: null, file_type: null, sticker_path: null, deleted_at: new Date().toISOString(),
+  });
   state.reactions.delete(m.id);
   if (state.replyTo?.id === m.id) clearReply();
   renderMessages();
@@ -1633,6 +1840,7 @@ function openChatOptions() {
   $('nickname-input').value = state.nicknames.get(chat.other_user_id) || '';
   $('nickname-input').placeholder = other?.display_name || '';
   $('nickname-status').hidden = true;
+  renderWallTiles();
   resetDeleteChat();
   $('dlg-chat').showModal();
 }
@@ -1695,7 +1903,7 @@ function wireProfilePictureAndChatOptions() {
 //  time you come back to it (or offers a button if you're mid-message).
 // ---------------------------------------------------------------------
 
-const APP_FILES = ['./', './app.js', './photo.js', './config.js', './style.css', './sw.js', './manifest.webmanifest'];
+const APP_FILES = ['./', './app.js', './photo.js', './editor.js', './config.js', './style.css', './sw.js', './manifest.webmanifest'];
 const UPDATE_KEY = 'boom-updated-to';
 const DRAFTS_KEY = 'boom-drafts';
 let runningVersion = null;
@@ -2271,12 +2479,12 @@ function wireUi() {
     await supabase.auth.signOut();
   });
 
-  // Photos
-  $('btn-attach').addEventListener('click', () => $('photo-input').click());
+  // ⊕: photos, doodles, stickers and files
+  $('btn-attach').addEventListener('click', () => $('dlg-attach').showModal());
   $('photo-input').addEventListener('change', (e) => {
     const files = [...e.target.files];
     e.target.value = ''; // so picking the same photo again still works
-    sendPhotos(files);
+    openCompose('photos', files);
   });
 
   // Reply bar
@@ -2300,6 +2508,14 @@ function wireUi() {
     $('dlg-msg').close();
     if (menuMessage) openViewer(menuMessage);
   });
+  $('act-download').addEventListener('click', () => {
+    $('dlg-msg').close();
+    if (menuMessage) downloadFile(menuMessage);
+  });
+  $('act-save-sticker').addEventListener('click', () => {
+    $('dlg-msg').close();
+    if (menuMessage) saveFriendSticker(menuMessage);
+  });
   $('act-unsend').addEventListener('click', () => {
     const button = $('act-unsend');
     if (!unsendArmed) {
@@ -2317,7 +2533,7 @@ function wireUi() {
 
   // Photo viewer
   $('dlg-photo').addEventListener('click', (e) => {
-    if (e.target === $('dlg-photo') || e.target.closest('[data-close]')) $('dlg-photo').close();
+    if (e.target === $('dlg-photo') || e.target.classList.contains('viewer-stage') || e.target.closest('[data-close]')) $('dlg-photo').close();
   });
 
   // Close sheets with the × button or by tapping outside them
@@ -2405,7 +2621,7 @@ function onTyping(convId, payload) {
 const EDIT_WINDOW_MS = 15 * 60 * 1000;
 
 function canEdit(m) {
-  return state.extras && m.sender_id === state.user.id && !m.deleted_at && !m.photo_path
+  return state.extras && m.sender_id === state.user.id && !m.deleted_at && !m.photo_path && !m.file_path && !m.sticker_path
     && typeof m.id === 'number' && Date.now() - time(m.created_at) < EDIT_WINDOW_MS;
 }
 
@@ -3019,6 +3235,664 @@ function wireLaterAndNicknames() {
   // Left open overnight? Check for a new memory when you come back.
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible' && state.started && memoryDay !== new Date().toDateString()) loadMemory();
+  });
+}
+
+// ---------------------------------------------------------------------
+//  The edit screen: photos before sending, doodles, and new stickers
+// ---------------------------------------------------------------------
+
+const MAX_BATCH = 10;
+const COLOUR_NAMES = ['White', 'Ink', 'Red', 'Orange', 'Yellow', 'Green', 'Blue', 'Purple'];
+let editor = null;
+const compose = { kind: null, items: [], index: 0, convId: null, busy: false };
+let textTarget = null;
+let thumbTimer = null;
+
+async function openCompose(kind, files = []) {
+  if (kind !== 'sticker' && !state.activeId) return;
+  const images = [...files].filter((f) => !f.type || f.type.startsWith('image/'));
+  if (kind !== 'doodle' && !images.length) {
+    if (files.length) toast('That isn\'t a photo. To send other files, tap ⊕ then File.');
+    return;
+  }
+  if (kind === 'photos' && images.length > MAX_BATCH) toast(`You can send up to ${MAX_BATCH} photos at a time, so the first ${MAX_BATCH} are ready.`);
+  const items = kind === 'doodle' ? [blankItem()] : images.slice(0, kind === 'sticker' ? 1 : MAX_BATCH).map(photoItem);
+  Object.assign(compose, { kind, items, index: 0, convId: state.activeId, busy: false });
+  editor.aspect = kind === 'sticker' ? 1 : null;
+  editor.mode = kind === 'doodle' ? 'draw' : kind === 'sticker' ? 'crop' : 'view';
+  if (kind === 'sticker') items[0].shape = 'rounded';
+  $('compose-title').textContent = kind === 'doodle' ? 'Doodle' : kind === 'sticker' ? 'New sticker' : '';
+  $('compose-caption').value = '';
+  $('compose-status').hidden = true;
+  $('text-entry').hidden = true;
+  $('dlg-compose').showModal();
+  await showComposeItem(0);
+}
+
+async function showComposeItem(i) {
+  compose.index = i;
+  // Keep only the photo being edited in memory (phones run out quickly).
+  compose.items.forEach((item, j) => { if (j !== i) releasePreview(item); });
+  renderStrip();
+  renderComposeChrome();
+  try {
+    await editor.show(compose.items[i]);
+  } catch {
+    $('compose-status').textContent = "This photo can't be edited here, but it can still be sent as it is.";
+    $('compose-status').hidden = false;
+  }
+  renderComposeChrome();
+}
+
+function composeChanged() {
+  renderComposeChrome();
+  clearTimeout(thumbTimer);
+  const item = compose.items[compose.index];
+  thumbTimer = setTimeout(() => refreshThumb(item), 350);
+}
+
+// Update the little picture in the strip to show your edits.
+async function refreshThumb(item) {
+  if (!item?.preview || compose.kind !== 'photos' || !compose.items.includes(item)) return;
+  const sw = item.preview.width;
+  const sh = item.preview.height;
+  const [W, H] = item.rot % 180 ? [sh, sw] : [sw, sh];
+  const c = item.crop || { w: 1, h: 1 };
+  const aspect = (c.w * W) / (c.h * H);
+  const canvas = h('canvas', { width: 120, height: Math.max(1, Math.round(120 / aspect)) });
+  paint(canvas.getContext('2d'), item, item.preview, canvas.width, canvas.height);
+  const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.8));
+  if (!blob || !compose.items.includes(item)) return;
+  if (item.thumbUrl) URL.revokeObjectURL(item.thumbUrl);
+  item.thumbUrl = isEdited(item) ? URL.createObjectURL(blob) : null;
+  renderStrip();
+}
+
+function renderStrip() {
+  const strip = $('compose-strip');
+  strip.hidden = compose.kind !== 'photos';
+  if (strip.hidden) return;
+  const many = compose.items.length > 1;
+  strip.replaceChildren(...compose.items.map((item, i) => {
+    const current = i === compose.index;
+    if (!item.url) item.url = URL.createObjectURL(item.file);
+    return h('div', { class: `strip-item${current ? ' current' : ''}` },
+      h('button', {
+        type: 'button', class: 'strip-thumb', 'aria-label': `Photo ${i + 1}`, 'aria-current': current ? 'true' : null,
+        onclick: () => { if (!current) showComposeItem(i); },
+      }, h('img', { alt: '', src: item.thumbUrl || item.url })),
+      current && many ? h('button', { type: 'button', class: 'strip-remove', 'aria-label': `Remove photo ${i + 1}`, onclick: () => removeComposeItem(i) }, '×') : null);
+  }));
+  if (compose.items.length < MAX_BATCH) {
+    strip.append(h('button', { type: 'button', class: 'strip-add', 'aria-label': 'Add more photos', onclick: () => $('compose-add-input').click() }, '+'));
+  }
+  $('compose-title').textContent = many ? `${compose.items.length} photos` : 'Photo';
+}
+
+function removeComposeItem(i) {
+  const [gone] = compose.items.splice(i, 1);
+  if (gone) releaseItem(gone);
+  showComposeItem(Math.min(i, compose.items.length - 1));
+}
+
+function addComposeItems(files) {
+  const room = MAX_BATCH - compose.items.length;
+  const images = [...files].filter((f) => !f.type || f.type.startsWith('image/'));
+  if (images.length > room) toast(`You can send up to ${MAX_BATCH} photos at a time.`);
+  const added = images.slice(0, room).map(photoItem);
+  if (!added.length) return;
+  compose.items.push(...added);
+  showComposeItem(compose.items.length - added.length);
+}
+
+function renderComposeChrome() {
+  const { kind } = compose;
+  const mode = editor.mode;
+  $('tool-undo').disabled = !editor.canUndo;
+  $('tool-rotate').hidden = kind === 'doodle';
+  $('tool-crop').hidden = kind === 'doodle';
+  for (const [id, m] of [['tool-crop', 'crop'], ['tool-draw', 'draw'], ['tool-text', 'text']]) {
+    $(id).setAttribute('aria-pressed', String(mode === m));
+  }
+  $('opt-colours').hidden = mode !== 'draw' && mode !== 'text';
+  $('opt-brushes').hidden = mode !== 'draw';
+  $('opt-crop').hidden = mode !== 'crop' || kind === 'sticker';
+  $('opt-shape').hidden = kind !== 'sticker';
+  for (const b of $('opt-colours').children) b.classList.toggle('chosen', b.dataset.colour === editor.colour);
+  for (const b of $('opt-brushes').children) b.classList.toggle('chosen', Number(b.dataset.size) === editor.brush);
+  for (const b of $('opt-crop').querySelectorAll('[data-aspect]')) b.classList.toggle('chosen', (b.dataset.aspect === 'square') === (editor.aspect === 1));
+  const shape = compose.items[compose.index]?.shape || 'square';
+  for (const b of $('opt-shape').children) b.classList.toggle('chosen', b.dataset.shape === shape);
+  $('compose-caption').hidden = kind === 'sticker';
+  $('compose-go').hidden = kind === 'sticker';
+  $('compose-save').hidden = kind !== 'sticker';
+}
+
+function setComposeMode(mode) {
+  editor.setMode(editor.mode === mode && compose.kind !== 'doodle' ? 'view' : mode);
+  renderComposeChrome();
+}
+
+function openTextEntry(t, at) {
+  textTarget = { t, at };
+  $('text-entry-input').value = t?.text || '';
+  $('text-entry').hidden = false;
+  $('text-entry-input').focus();
+}
+
+function closeTextEntry(save) {
+  if (save && textTarget) editor.setText(textTarget.t, $('text-entry-input').value, textTarget.at);
+  textTarget = null;
+  $('text-entry').hidden = true;
+}
+
+function composeStatus(text) {
+  $('compose-status').textContent = text;
+  $('compose-status').hidden = !text;
+}
+
+async function finishCompose(e) {
+  e.preventDefault();
+  if (compose.busy || !compose.items.length) return;
+  if (!$('text-entry').hidden) closeTextEntry(true);
+  if (compose.kind === 'sticker') {
+    await saveNewSticker();
+    return;
+  }
+  const items = compose.items;
+  const caption = $('compose-caption').value.trim().slice(0, 1000);
+  const convId = compose.convId;
+  compose.items = []; // handed over for sending
+  $('dlg-compose').close();
+  sendItems(convId, items, caption);
+}
+
+function cleanUpCompose() {
+  closeTextEntry(false);
+  for (const item of compose.items) releaseItem(item);
+  compose.items = [];
+  compose.kind = null;
+  editor.item = null;
+}
+
+// ---------------------------------------------------------------------
+//  Files (up to 25 MB, only for the people in the chat)
+// ---------------------------------------------------------------------
+
+const MAX_FILE_BYTES = 25 * 1024 * 1024;
+const MIME_RE = /^[a-z0-9][a-z0-9.+-]{0,60}\/[a-z0-9][a-z0-9.+-]{0,60}$/;
+const downloading = new Set();
+
+function formatSize(bytes) {
+  if (!bytes) return '';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  const mb = bytes / (1024 * 1024);
+  return `${mb < 10 ? mb.toFixed(1) : Math.round(mb)} MB`;
+}
+
+function fileExt(name) {
+  const m = /\.([a-z0-9]{1,5})$/i.exec(name || '');
+  return m ? m[1].toUpperCase() : '';
+}
+
+// No slashes or invisible characters, and not too long.
+function cleanFileName(name) {
+  const cleaned = String(name || '').replace(/[\u0000-\u001f\u007f/\\]/g, '_').trim();
+  if (!cleaned) return 'file';
+  if (cleaned.length <= 200) return cleaned;
+  const ext = fileExt(cleaned);
+  return ext ? `${cleaned.slice(0, 195 - ext.length)}….${ext.toLowerCase()}` : cleaned.slice(0, 200);
+}
+
+async function sendFile(file) {
+  const convId = state.activeId;
+  if (!convId || !file) return;
+  if (file.size > MAX_FILE_BYTES) {
+    toast(`That file is ${formatSize(file.size)}. Files can be up to 25 MB.`);
+    return;
+  }
+  if (!file.size) {
+    toast('That file is empty.');
+    return;
+  }
+  const type = (file.type || '').toLowerCase();
+  const temp = newTemp(convId, {
+    file_local: true, fileBlob: file, file_name: cleanFileName(file.name), file_size: file.size, file_type: MIME_RE.test(type) ? type : null,
+  });
+  clearReply();
+  renderMessages(true);
+  await deliverFile(temp);
+}
+
+async function deliverFile(temp) {
+  const path = `${temp.conversation_id}/${crypto.randomUUID()}`;
+  const bucket = supabase.storage.from('files');
+  let data = null;
+  let error = null;
+  let uploaded = false;
+  try {
+    // Stored as plain bytes: the server never treats it as a web page or app.
+    const up = await bucket.upload(path, temp.fileBlob, { contentType: 'application/octet-stream', upsert: false });
+    if (up.error) throw up.error;
+    uploaded = true;
+    const row = {
+      conversation_id: temp.conversation_id,
+      body: '',
+      file_path: path,
+      file_name: temp.file_name,
+      file_size: temp.file_size,
+      file_type: temp.file_type,
+    };
+    if (temp.reply_to) row.reply_to = temp.reply_to;
+    const res = await supabase.from('messages').insert(row).select(msgColumns()).single();
+    if (res.error) throw res.error;
+    data = res.data;
+  } catch (e) {
+    error = e;
+    if (uploaded) bucket.remove([path]).catch(() => {});
+  }
+  settle(temp, data, error);
+  if (error) toast(error?.statusCode === '413' || /exceeded|too large|size/i.test(error?.message || '')
+    ? 'That file is too big for the free storage plan.'
+    : "File didn't send. Tap it to try again.");
+}
+
+function fileCardEl(m, bubble, local) {
+  const ext = fileExt(m.file_name);
+  return h('button', {
+    type: 'button',
+    class: 'msg-file',
+    'aria-label': local ? `File: ${m.file_name}` : `Download ${m.file_name}, ${formatSize(m.file_size)}`,
+    onclick: (e) => { if (!local) { e.stopPropagation(); tapped(m, bubble, () => downloadFile(m)); } },
+  },
+  h('span', { class: 'file-icon', 'aria-hidden': 'true' }, ext || 'FILE'),
+  h('span', { class: 'file-info' },
+    h('strong', {}, m.file_name),
+    h('span', {}, [formatSize(m.file_size), ext].filter(Boolean).join(' · '))));
+}
+
+// Always saved to your device as a download, never opened inside Boom Boom,
+// so a file can't run anything here.
+async function downloadFile(m) {
+  if (!m.file_path || downloading.has(m.id)) return;
+  downloading.add(m.id);
+  toast(`Downloading ${m.file_name}…`);
+  try {
+    const { data, error } = await supabase.storage.from('files').download(m.file_path);
+    if (error || !data) throw error || new Error('download failed');
+    const url = URL.createObjectURL(new Blob([data], { type: 'application/octet-stream' }));
+    const a = h('a', { href: url, download: cleanFileName(m.file_name).replace(/[:*?"<>|]/g, '_') });
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  } catch {
+    toast("Couldn't download it. Check your connection.");
+  } finally {
+    downloading.delete(m.id);
+  }
+}
+
+// ---------------------------------------------------------------------
+//  Stickers, made from your own photos
+// ---------------------------------------------------------------------
+
+let stickerEditing = false;
+
+function stickerImgEl(path) {
+  const img = h('img', { class: 'sticker-img', alt: 'Sticker', decoding: 'async' });
+  blobUrl('stickers', path).then((url) => { img.src = url; }, () => { img.alt = "Sticker couldn't load"; });
+  return img;
+}
+
+async function loadStickers() {
+  if (!state.media) return;
+  const { data, error } = await supabase.from('stickers').select('id, path').order('created_at', { ascending: false });
+  if (!error) state.stickers = data;
+}
+
+async function openStickers() {
+  stickerEditing = false;
+  renderStickers();
+  if (!$('dlg-stickers').open) $('dlg-stickers').showModal();
+  await loadStickers();
+  renderStickers();
+}
+
+function renderStickers() {
+  const grid = $('sticker-grid');
+  const tiles = [h('button', {
+    type: 'button', class: 'sticker-tile sticker-new', 'aria-label': 'Make a new sticker from a photo',
+    onclick: () => { $('dlg-stickers').close(); $('sticker-input').click(); },
+  }, h('span', { 'aria-hidden': 'true' }, '+'), 'New')];
+  for (const s of state.stickers) {
+    tiles.push(h('button', {
+      type: 'button',
+      class: `sticker-tile${stickerEditing ? ' editing' : ''}`,
+      'aria-label': stickerEditing ? 'Remove this sticker' : 'Send this sticker',
+      onclick: () => (stickerEditing ? removeSticker(s) : sendSticker(s.path)),
+    }, stickerImgEl(s.path), stickerEditing ? h('span', { class: 'sticker-x', 'aria-hidden': 'true' }, '×') : null));
+  }
+  grid.replaceChildren(...tiles);
+  $('sticker-hint').hidden = state.stickers.length > 0;
+  $('btn-sticker-edit').hidden = !state.stickers.length;
+  $('btn-sticker-edit').textContent = stickerEditing ? 'Done' : 'Edit';
+}
+
+async function sendSticker(path) {
+  $('dlg-stickers').close();
+  const convId = state.activeId;
+  if (!convId) return;
+  const temp = newTemp(convId, { sticker_path: path });
+  clearReply();
+  renderMessages(true);
+  await deliver(temp);
+}
+
+async function removeSticker(s) {
+  const { data: unusedFile, error } = await supabase.rpc('remove_sticker', { p_id: s.id });
+  if (error) {
+    toast("Couldn't remove it. Check your connection.");
+    return;
+  }
+  state.stickers = state.stickers.filter((x) => x.id !== s.id);
+  if (unusedFile) supabase.storage.from('stickers').remove([unusedFile]).catch(() => {});
+  if (!state.stickers.length) stickerEditing = false;
+  renderStickers();
+}
+
+async function saveFriendSticker(m) {
+  const { data: id, error } = await supabase.rpc('add_sticker', { p_path: m.sticker_path });
+  if (error) {
+    toast(isNetworkError(error) ? "Couldn't save it. Check your connection." : error.message);
+    return;
+  }
+  if (!state.stickers.some((s) => s.id === id)) state.stickers.unshift({ id, path: m.sticker_path });
+  toast('Saved to your stickers.');
+}
+
+async function saveNewSticker() {
+  const item = compose.items[0];
+  if (!item) return;
+  compose.busy = true;
+  composeStatus('Saving sticker…');
+  try {
+    let blob = await exportItem(item, { type: 'image/webp', quality: 0.9, size: 512 });
+    if (blob.type !== 'image/webp') blob = await exportItem(item, { type: 'image/png', size: 512 }); // no WebP on this device
+    const ext = blob.type === 'image/webp' ? 'webp' : 'png';
+    const path = `${state.user.id}/${crypto.randomUUID()}.${ext}`;
+    const bucket = supabase.storage.from('stickers');
+    const up = await bucket.upload(path, blob, { contentType: blob.type, upsert: false, cacheControl: '31536000' });
+    if (up.error) throw up.error;
+    const { data: id, error } = await supabase.rpc('add_sticker', { p_path: path });
+    if (error) {
+      bucket.remove([path]).catch(() => {});
+      throw error;
+    }
+    state.photoUrls.set(`stickers:${path}`, Promise.resolve(URL.createObjectURL(blob)));
+    state.stickers = [{ id, path }, ...state.stickers.filter((x) => x.id !== id)];
+    $('dlg-compose').close();
+    await openStickers();
+    toast('Sticker saved. Tap it to send.');
+  } catch (error) {
+    composeStatus(isNetworkError(error) ? "Couldn't save the sticker. Check your connection." : (error?.message || "Couldn't save the sticker."));
+  } finally {
+    compose.busy = false;
+  }
+}
+
+// ---------------------------------------------------------------------
+//  Chat wallpaper (just for you)
+// ---------------------------------------------------------------------
+
+const WALLS = [['', 'None'], ['pattern:dots', 'Dots'], ['pattern:grid', 'Grid'], ['pattern:stripes', 'Stripes'],
+  ['pattern:waves', 'Waves'], ['pattern:confetti', 'Confetti'], ['pattern:glow', 'Glow']];
+const WALL_CLASSES = ['has-wall', 'wall-photo', ...WALLS.filter(([v]) => v).map(([v]) => `wall-${v.slice(8)}`)];
+
+async function loadWallpapers() {
+  if (!state.media) return;
+  const { data, error } = await supabase.from('chat_wallpapers').select('conversation_id, wallpaper');
+  if (error) return;
+  state.wallpapers = new Map(data.map((w) => [w.conversation_id, w.wallpaper]));
+  applyWallpaper();
+}
+
+function applyWallpaper() {
+  const box = $('messages');
+  const conv = state.activeId;
+  const value = (conv && state.wallpapers.get(conv)) || '';
+  box.classList.remove(...WALL_CLASSES);
+  box.style.removeProperty('--wall-photo');
+  if (!value) return;
+  box.classList.add('has-wall');
+  if (value.startsWith('pattern:')) {
+    box.classList.add(`wall-${value.slice(8)}`);
+  } else if (value.startsWith('photo:')) {
+    box.classList.add('wall-photo');
+    blobUrl('wallpapers', value.slice(6)).then((url) => {
+      if (state.activeId === conv && state.wallpapers.get(conv) === value) box.style.setProperty('--wall-photo', `url("${url}")`);
+    }, () => {});
+  }
+}
+
+function renderWallTiles() {
+  const current = state.wallpapers.get(state.activeId) || '';
+  const tiles = WALLS.map(([value, label]) => h('button', {
+    type: 'button',
+    class: `wall-tile${value ? ` wall-${value.slice(8)}` : ''}${value === current ? ' chosen' : ''}`,
+    'aria-pressed': String(value === current),
+    onclick: () => setWallpaper(value || null),
+  }, h('span', {}, label)));
+  const photoChosen = current.startsWith('photo:');
+  const photoTile = h('button', {
+    type: 'button',
+    class: `wall-tile wall-own${photoChosen ? ' chosen' : ''}`,
+    'aria-pressed': String(photoChosen),
+    onclick: () => $('wall-input').click(),
+  }, h('span', {}, photoChosen ? 'Change photo' : 'Your photo'));
+  if (photoChosen) blobUrl('wallpapers', current.slice(6)).then((url) => { photoTile.style.backgroundImage = `url("${url}")`; }, () => {});
+  $('wall-tiles').replaceChildren(...tiles, photoTile);
+}
+
+async function setWallpaper(value) {
+  const conv = state.activeId;
+  if (!conv) return false;
+  const before = state.wallpapers.get(conv) || null;
+  if (before === (value || null)) return true;
+  const put = (v) => { if (v) state.wallpapers.set(conv, v); else state.wallpapers.delete(conv); applyWallpaper(); renderWallTiles(); };
+  put(value);
+  const { data: unused, error } = await supabase.rpc('set_wallpaper', { conv, p_wallpaper: value });
+  if (error) {
+    put(before);
+    toast("Couldn't change the wallpaper. Check your connection.");
+    return false;
+  }
+  if (unused) supabase.storage.from('wallpapers').remove([unused]).catch(() => {});
+  return true;
+}
+
+async function setWallpaperPhoto(file) {
+  const status = $('wall-status');
+  status.textContent = 'Setting your wallpaper…';
+  try {
+    const blob = await makeWallpaper(file);
+    const path = `${state.user.id}/${crypto.randomUUID()}.jpg`;
+    const bucket = supabase.storage.from('wallpapers');
+    const up = await bucket.upload(path, blob, { contentType: 'image/jpeg', upsert: false, cacheControl: '31536000' });
+    if (up.error) throw up.error;
+    state.photoUrls.set(`wallpapers:${path}`, Promise.resolve(URL.createObjectURL(blob)));
+    if (!(await setWallpaper(`photo:${path}`))) bucket.remove([path]).catch(() => {});
+  } catch (error) {
+    toast(error?.code === 'unsupported' ? error.message : "Couldn't set the wallpaper. Check your connection.");
+  } finally {
+    status.textContent = 'Only you see it.';
+  }
+}
+
+// ---------------------------------------------------------------------
+//  What's new (shown once after an update, and any time from Settings)
+// ---------------------------------------------------------------------
+
+const WHATS_NEW = [
+  {
+    id: '2026-10-22', needs: 'media', date: '22 October 2026', title: 'Albums, doodles, stickers and more',
+    items: [
+      ['🖼️', 'Albums.', 'Pick several photos at once and they arrive together as one album. Swipe through them in the viewer.'],
+      ['✂️', 'Crop, rotate, draw and write.', 'After picking a photo, use the buttons at the top to edit it before sending.'],
+      ['✏️', 'Doodles.', 'Tap ⊕ next to the message box, then Doodle, and draw with your finger.'],
+      ['😎', 'Stickers.', 'Tap ⊕, then Stickers, then New to turn a photo into a sticker. Press and hold a friend\'s sticker to save it.'],
+      ['📎', 'Files.', 'Tap ⊕, then File, to send PDFs, documents and more, up to 25 MB.'],
+      ['🎨', 'Wallpaper.', 'In a chat, tap ⋮ and pick a pattern or your own photo. Only you see it.'],
+    ],
+  },
+  {
+    id: '2026-10-21-b', needs: 'later', date: '21 October 2026', title: 'Send later, nicknames and gestures',
+    items: [
+      ['✍️', 'Text styling.', 'Type *bold*, _italic_ or ~strikethrough~.'],
+      ['⏰', 'Send later.', 'Press and hold the send button to pick a time.'],
+      ['🏷️', 'Nicknames.', 'In a chat, tap ⋮ then Nickname. Only you see it.'],
+      ['👉', 'Swipe and double-tap.', 'Swipe a message right to reply. Double-tap it to ❤️.'],
+      ['📅', 'On this day.', 'Every so often, a message from a year ago appears above your chats.'],
+    ],
+  },
+  {
+    id: '2026-10-21-a', history: true, date: '21 October 2026', title: 'Boom Boom begins',
+    items: [
+      ['💬', 'Chats', 'that arrive live, with notifications when the app is closed.'],
+      ['📷', 'Full-quality photos,', 'with location and camera details removed first.'],
+      ['❤️', 'Reactions, replies and unsend.', 'Press and hold a message.'],
+      ['🙂', 'Profile pictures, typing…, edit, search and chat colours.', ''],
+    ],
+  },
+];
+
+const whatsNewKey = () => `boom-whats-new:${state.user?.id}`;
+
+function seenWhatsNew() {
+  try {
+    return new Set(JSON.parse(localStorage.getItem(whatsNewKey()) || '[]'));
+  } catch {
+    return new Set();
+  }
+}
+
+function maybeShowWhatsNew() {
+  if (!state.started || document.querySelector('dialog[open]')) return;
+  const seen = seenWhatsNew();
+  const fresh = WHATS_NEW.filter((e) => !e.history && (!e.needs || state[e.needs]) && !seen.has(e.id));
+  if (!fresh.length) return;
+  showWhatsNew(fresh);
+  try {
+    localStorage.setItem(whatsNewKey(), JSON.stringify([...seen, ...fresh.map((e) => e.id)]));
+  } catch { /* fine: it just shows again next time */ }
+}
+
+function showWhatsNew(entries = WHATS_NEW.filter((e) => !e.needs || state[e.needs])) {
+  $('whatsnew-body').replaceChildren(...entries.map((e) => h('section', { class: 'whatsnew-entry' },
+    h('h3', {}, e.title),
+    h('p', { class: 'whatsnew-date' }, e.date),
+    h('ul', { class: 'whatsnew-list' }, ...e.items.map(([icon, title, text]) => h('li', {},
+      h('span', { class: 'whatsnew-icon', 'aria-hidden': 'true' }, icon),
+      h('span', {}, h('strong', {}, title), text ? ` ${text}` : '')))))));
+  $('dlg-whatsnew').showModal();
+}
+
+function wireMedia() {
+  editor = new Editor($('compose-canvas'), { onChange: composeChanged, onText: openTextEntry });
+
+  // ⊕ menu
+  const fromAttach = (fn) => () => { $('dlg-attach').close(); fn(); };
+  $('att-photos').addEventListener('click', fromAttach(() => $('photo-input').click()));
+  $('att-doodle').addEventListener('click', fromAttach(() => openCompose('doodle')));
+  $('att-sticker').addEventListener('click', fromAttach(openStickers));
+  $('att-file').addEventListener('click', fromAttach(() => $('file-input').click()));
+  $('file-input').addEventListener('change', (e) => {
+    const [file] = e.target.files;
+    e.target.value = '';
+    if (file) sendFile(file);
+  });
+  $('sticker-input').addEventListener('change', (e) => {
+    const files = [...e.target.files];
+    e.target.value = '';
+    if (files.length) openCompose('sticker', files);
+  });
+
+  // Edit screen
+  $('compose-close').addEventListener('click', () => $('dlg-compose').close());
+  $('dlg-compose').addEventListener('close', cleanUpCompose);
+  $('compose-send').addEventListener('submit', finishCompose);
+  $('compose-add-input').addEventListener('change', (e) => {
+    const files = [...e.target.files];
+    e.target.value = '';
+    addComposeItems(files);
+  });
+  $('tool-undo').addEventListener('click', () => editor.undo());
+  $('tool-rotate').addEventListener('click', () => editor.rotate());
+  $('tool-crop').addEventListener('click', () => setComposeMode('crop'));
+  $('tool-draw').addEventListener('click', () => setComposeMode('draw'));
+  $('tool-text').addEventListener('click', () => {
+    editor.setMode('text');
+    renderComposeChrome();
+    const c = editor.item?.crop || { x: 0, y: 0, w: 1, h: 1 };
+    openTextEntry(null, [c.x + c.w / 2, c.y + c.h / 2]);
+  });
+  $('text-entry').addEventListener('submit', (e) => { e.preventDefault(); closeTextEntry(true); });
+  $('text-entry-input').addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeTextEntry(false); }
+  });
+  $('opt-colours').replaceChildren(...COLOURS.map((colour, i) => h('button', {
+    type: 'button', class: 'swatch small', style: `background:${colour}`, 'data-colour': colour, 'aria-label': COLOUR_NAMES[i],
+    onclick: () => { editor.setColour(colour); renderComposeChrome(); },
+  })));
+  $('opt-brushes').replaceChildren(...Object.entries(BRUSHES).map(([name, px]) => h('button', {
+    type: 'button', class: 'brush', 'data-size': px, 'aria-label': `${name[0].toUpperCase()}${name.slice(1)} brush`,
+    onclick: () => { editor.brush = px; renderComposeChrome(); },
+  }, h('span', { style: `width:${px + 4}px;height:${px + 4}px` }))));
+  for (const b of $('opt-crop').querySelectorAll('[data-aspect]')) {
+    b.addEventListener('click', () => { editor.setAspect(b.dataset.aspect === 'square' ? 1 : null); renderComposeChrome(); });
+  }
+  $('crop-reset').addEventListener('click', () => {
+    if (!editor.item?.crop) return;
+    editor.remember();
+    editor.item.crop = null;
+    editor.aspect = null;
+    editor.setMode('crop');
+    editor.changed();
+  });
+  for (const b of $('opt-shape').children) b.addEventListener('click', () => editor.setShape(b.dataset.shape));
+
+  // Photo viewer: arrows, swipe and keyboard for albums
+  $('viewer-prev').addEventListener('click', () => stepViewer(-1));
+  $('viewer-next').addEventListener('click', () => stepViewer(1));
+  $('dlg-photo').addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowLeft') stepViewer(-1);
+    if (e.key === 'ArrowRight') stepViewer(1);
+  });
+  let swipeFrom = null;
+  $('viewer-img').addEventListener('pointerdown', (e) => { swipeFrom = e.clientX; });
+  $('viewer-img').addEventListener('pointerup', (e) => {
+    if (swipeFrom == null) return;
+    const dx = e.clientX - swipeFrom;
+    swipeFrom = null;
+    if (Math.abs(dx) > 50) stepViewer(dx < 0 ? 1 : -1);
+  });
+
+  // Stickers
+  $('btn-sticker-edit').addEventListener('click', () => { stickerEditing = !stickerEditing; renderStickers(); });
+
+  // Wallpaper
+  $('wall-input').addEventListener('change', (e) => {
+    const [file] = e.target.files;
+    e.target.value = '';
+    if (file) setWallpaperPhoto(file);
+  });
+
+  // What's new
+  $('btn-whats-new').addEventListener('click', () => {
+    $('dlg-settings').close();
+    showWhatsNew();
   });
 }
 

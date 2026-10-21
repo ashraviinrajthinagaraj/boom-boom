@@ -293,7 +293,8 @@ export function cleanPhoto(bytes) {
 //  Browser-only helpers
 // ---------------------------------------------------------------------
 
-async function decode(blob, targetWidth) {
+// Decodes a picture the right way up (and optionally shrunk to a width).
+export async function decode(blob, targetWidth) {
   if (targetWidth) {
     try {
       return await createImageBitmap(blob, { imageOrientation: 'from-image', resizeWidth: targetWidth, resizeQuality: 'high' });
@@ -398,4 +399,23 @@ export async function preparePhoto(file) {
   const original = new Blob([cleaned.bytes], { type: cleaned.mime });
   const thumb = await makeThumbnail(original, cleaned.width, cleaned.height);
   return { original, thumb, ext: cleaned.ext, mime: cleaned.mime, width: cleaned.width, height: cleaned.height };
+}
+
+// Chat wallpaper from your own photo: up to 1600 pixels on the long side,
+// re-saved as JPEG (which also drops every hidden detail).
+export async function makeWallpaper(file, maxEdge = 1600) {
+  let bitmap;
+  try {
+    bitmap = await decode(file, 0);
+  } catch {
+    throw new PhotoError('unsupported', "That picture's format can't be used. Try a JPEG or PNG.");
+  }
+  const scale = Math.min(1, maxEdge / Math.max(bitmap.width, bitmap.height));
+  const width = Math.max(1, Math.round(bitmap.width * scale));
+  const height = Math.max(1, Math.round(bitmap.height * scale));
+  try {
+    return await canvasToJpeg(bitmap, width, height, 0.85);
+  } finally {
+    bitmap.close?.();
+  }
 }

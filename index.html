@@ -163,10 +163,12 @@
           </button>
         </div>
         <form id="composer" class="composer">
-          <button id="btn-attach" class="icon-btn attach" type="button" aria-label="Send a photo" title="Send a photo" hidden>
-            <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="3" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="9" cy="10" r="1.8" fill="currentColor"/><path d="M4.5 17l5-5 3.5 3.5 2.5-2.5 4 4" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
+          <button id="btn-attach" class="icon-btn attach" type="button" aria-label="Send photos, a doodle, a sticker or a file" title="Photos, doodle, stickers, file" hidden>
+            <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><circle cx="12" cy="12" r="9.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 7.5v9M7.5 12h9" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
           </button>
           <input id="photo-input" type="file" accept="image/*" multiple hidden>
+          <input id="file-input" type="file" hidden>
+          <input id="sticker-input" type="file" accept="image/*" hidden>
           <textarea id="composer-input" rows="1" placeholder="Message" aria-label="Message" maxlength="4000"></textarea>
           <button class="send" id="btn-send" type="submit" aria-label="Send" title="Send" disabled>
             <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M12 19V6M6 11l6-6 6 6" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -223,7 +225,9 @@
           <li id="tip-gestures">Swipe a message right to reply. Double-tap it to ❤️.</li>
           <li id="tip-later" hidden>Hold the send button to send a message later.</li>
           <li id="tip-nickname" hidden>Give a friend a nickname in a chat's ⋮ menu. Only you see it.</li>
+          <li id="tip-media" hidden>Tap ⊕ next to the message box for photos, doodles, stickers and files.</li>
         </ul>
+        <button type="button" class="btn ghost small" id="btn-whats-new">What's new</button>
       </section>
 
       <section class="form" id="install-section" aria-labelledby="install-title">
@@ -286,6 +290,8 @@
       <button id="act-reply" class="act" type="button">Reply</button>
       <button id="act-edit" class="act" type="button">Edit</button>
       <button id="act-photo" class="act" type="button">View full photo</button>
+      <button id="act-download" class="act" type="button">Download file</button>
+      <button id="act-save-sticker" class="act" type="button">Save to my stickers</button>
       <button id="act-copy" class="act" type="button">Copy text</button>
       <button id="act-unsend" class="act danger" type="button">Unsend</button>
     </div>
@@ -327,6 +333,12 @@
         <h3 id="chat-colour-title">Chat colour</h3>
         <div id="swatches" class="swatches" role="group" aria-label="Chat colour"></div>
         <p class="muted">You both see the same colour.</p>
+      </section>
+      <section class="form" id="chat-wall-section" aria-labelledby="chat-wall-title" hidden>
+        <h3 id="chat-wall-title">Wallpaper</h3>
+        <div id="wall-tiles" class="wall-tiles" role="group" aria-label="Wallpaper"></div>
+        <input type="file" id="wall-input" accept="image/*" hidden>
+        <p id="wall-status" class="muted" role="status">Only you see it.</p>
       </section>
       <section class="form" id="chat-delete-section" hidden>
         <h3>Delete chat</h3>
@@ -371,13 +383,107 @@
   <!-- Full-size photo -->
   <dialog id="dlg-photo" class="viewer" aria-label="Photo">
     <div class="viewer-bar">
+      <span id="viewer-count" class="viewer-count" hidden></span>
       <a id="viewer-save" class="btn ghost small viewer-save" hidden>Save photo</a>
       <button class="icon-btn" type="button" data-close aria-label="Close photo">
         <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
       </button>
     </div>
-    <img id="viewer-img" alt="Photo">
+    <div class="viewer-stage">
+      <img id="viewer-img" alt="Photo">
+      <button id="viewer-prev" class="viewer-nav prev" type="button" aria-label="Previous photo" hidden>
+        <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <button id="viewer-next" class="viewer-nav next" type="button" aria-label="Next photo" hidden>
+        <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M9 5l7 7-7 7" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+    </div>
     <p id="viewer-status" class="viewer-status" hidden></p>
+  </dialog>
+
+  <!-- ⊕ next to the message box -->
+  <dialog id="dlg-attach" class="sheet attach-sheet" aria-label="Send something">
+    <div class="attach-grid">
+      <button id="att-photos" class="attach-tile" type="button"><span class="attach-icon" style="background:#1F5FCC">🖼️</span>Photos</button>
+      <button id="att-doodle" class="attach-tile" type="button"><span class="attach-icon" style="background:#C2410C">✏️</span>Doodle</button>
+      <button id="att-sticker" class="attach-tile" type="button" hidden><span class="attach-icon" style="background:#6D3FC0">😎</span>Stickers</button>
+      <button id="att-file" class="attach-tile" type="button" hidden><span class="attach-icon" style="background:#0F766E">📎</span>File</button>
+    </div>
+  </dialog>
+
+  <!-- Edit photos before sending, doodle, or make a sticker -->
+  <dialog id="dlg-compose" class="viewer compose" aria-labelledby="compose-title">
+    <div class="compose-bar">
+      <button class="icon-btn" id="compose-close" type="button" aria-label="Cancel"><svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg></button>
+      <h2 id="compose-title">Photo</h2>
+      <div class="compose-tools" role="toolbar" aria-label="Edit">
+        <button id="tool-undo" class="icon-btn" type="button" aria-label="Undo" title="Undo" disabled>
+          <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M9 7L4 12l5 5M4 12h10a6 6 0 0 1 0 12" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" transform="translate(0 -3)"/></svg>
+        </button>
+        <button id="tool-rotate" class="icon-btn" type="button" aria-label="Rotate" title="Rotate">
+          <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.6-5.9M20 4v5h-5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <button id="tool-crop" class="icon-btn" type="button" aria-label="Crop" title="Crop" aria-pressed="false">
+          <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M6 2v14a2 2 0 0 0 2 2h14M2 6h14a2 2 0 0 1 2 2v14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+        </button>
+        <button id="tool-draw" class="icon-btn" type="button" aria-label="Draw" title="Draw" aria-pressed="false">
+          <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M4 20l1-5L16 4l4 4L9 19l-5 1zM14 6l4 4" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linejoin="round"/></svg>
+        </button>
+        <button id="tool-text" class="icon-btn tool-text" type="button" aria-label="Add text" title="Add text" aria-pressed="false">Aa</button>
+      </div>
+    </div>
+    <div class="compose-stage" id="compose-stage">
+      <canvas id="compose-canvas" aria-label="Picture being edited"></canvas>
+      <form id="text-entry" class="text-entry" hidden>
+        <input id="text-entry-input" maxlength="80" placeholder="Type something" autocomplete="off" aria-label="Text">
+        <button class="btn primary small" type="submit">Done</button>
+      </form>
+    </div>
+    <div class="compose-options">
+      <div id="opt-colours" class="opt-row" role="group" aria-label="Colour"></div>
+      <div id="opt-brushes" class="opt-row" role="group" aria-label="Brush size"></div>
+      <div id="opt-crop" class="opt-row" role="group" aria-label="Crop shape">
+        <button type="button" class="chip-btn" data-aspect="free">Free</button>
+        <button type="button" class="chip-btn" data-aspect="square">Square</button>
+        <button type="button" class="chip-btn" id="crop-reset">Reset</button>
+      </div>
+      <div id="opt-shape" class="opt-row" role="group" aria-label="Sticker shape">
+        <button type="button" class="chip-btn" data-shape="square">Square</button>
+        <button type="button" class="chip-btn" data-shape="rounded">Rounded</button>
+        <button type="button" class="chip-btn" data-shape="circle">Circle</button>
+      </div>
+    </div>
+    <div id="compose-strip" class="compose-strip"></div>
+    <input id="compose-add-input" type="file" accept="image/*" multiple hidden>
+    <form id="compose-send" class="compose-send">
+      <input id="compose-caption" placeholder="Add a caption…" maxlength="1000" autocomplete="off" aria-label="Caption">
+      <button id="compose-go" class="send" type="submit" aria-label="Send">
+        <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M12 19V6M6 11l6-6 6 6" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <button id="compose-save" class="btn primary" type="submit" hidden>Save sticker</button>
+    </form>
+    <p id="compose-status" class="compose-status" role="status" hidden></p>
+  </dialog>
+
+  <!-- Your stickers -->
+  <dialog id="dlg-stickers" class="sheet" aria-labelledby="dlg-stickers-title">
+    <header class="sheet-head">
+      <h2 id="dlg-stickers-title">Stickers</h2>
+      <button class="btn ghost small" id="btn-sticker-edit" type="button" hidden>Edit</button>
+      <button class="icon-btn" type="button" data-close aria-label="Close"><svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg></button>
+    </header>
+    <div id="sticker-grid" class="sticker-grid"></div>
+    <p id="sticker-hint" class="empty-small">Make stickers from your own photos. They're kept here, and only your friends in Boom Boom can see the ones you send.</p>
+  </dialog>
+
+  <!-- What's new -->
+  <dialog id="dlg-whatsnew" class="sheet" aria-labelledby="dlg-whatsnew-title">
+    <header class="sheet-head">
+      <h2 id="dlg-whatsnew-title">What's new</h2>
+      <button class="icon-btn" type="button" data-close aria-label="Close"><svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg></button>
+    </header>
+    <div id="whatsnew-body" class="sheet-body whatsnew"></div>
+    <div class="whatsnew-foot"><button class="btn primary" type="button" data-close autofocus>Got it</button></div>
   </dialog>
 
   <button id="update-banner" class="update-banner" type="button" hidden>Boom Boom has been updated. Tap to refresh.</button>

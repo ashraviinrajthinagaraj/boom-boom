@@ -216,6 +216,13 @@ function fakeDb(tables: Record<string, Row[]>, log: string[]) {
   check(photoPayload.body === "📷 Photo", "Photo notifications say 📷 Photo and never include the image");
   const r9 = await core.handleMessage(9, { db, vapid, fetchFn, now });
   check(r9.body.skipped === "message was unsent", "Unsent messages don't trigger a notification");
+
+  // Albums, files and stickers get a label, never the contents
+  const two = [{ path: "a" }, { path: "b" }, { path: "c" }];
+  check(core.label({ photo_path: "conv1/a.jpg", album: two }, "") === "📷 3 photos", "Albums say how many photos");
+  check(core.label({ photo_path: "conv1/a.jpg", album: two }, "Tournament day") === "📷 3 photos: Tournament day", "...with the caption");
+  check(core.label({ file_path: "conv1/f", file_name: "Motion prep.pdf" }, "") === "📎 Motion prep.pdf", "Files show their name");
+  check(core.label({ sticker_path: "u/s.webp" }, "") === "Sticker", "Stickers say Sticker");
 }
 
 console.log(results.join("\n"));

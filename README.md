@@ -16,6 +16,12 @@ Created by Ashraviinraj Thinagaraj.
 - **Nicknames** for your friends that only you can see
 - **Swipe right** on a message to reply, **double-tap** it to ❤️
 - **On this day**: a little card with something from your chats a year ago
+- **Albums**: pick several photos and they arrive together as one album
+- **Crop, rotate, draw and add text** before sending a photo, or draw a **doodle** from scratch
+- **Files** up to 25 MB (PDFs, documents and more)
+- **Stickers** made from your own photos
+- **Chat wallpaper** per chat, just for you
+- **What's new**: a short card after each update, so friends find new features
 - **CPR**: a scheduled check-in that stops the free Supabase project from pausing
 - Updates itself: when a new version is on GitHub, the app refreshes the next time you come back to it
 - Unread badges, a count in the browser tab, and a little "boom" ripple when a message lands in another chat
@@ -123,6 +129,21 @@ If you already deployed `send-push`, update it too so photo notifications say "�
 - **Swipe right** on any message to reply to it. **Double-tap** (or double-click) a message to ❤️ it. Double-tapping never removes a heart; use press-and-hold for that.
 - **On this day:** when you open Boom Boom, a card at the top of your chat list can show something from the same day 1 to 5 years ago (it prefers photos). Tap it to jump to that message, or ✕ to hide it for the day. It only uses what's already in your chats, and skips unsent messages and chats you've deleted. Boom Boom started on 21 October 2026, so the first one can appear on 21 October 2027.
 
+## Albums, files, stickers and wallpaper (one-time server setup)
+
+**SQL Editor → New query**: paste [`supabase/media-extras.sql`](supabase/media-extras.sql) and **Run**, once (after `send-later-nicknames.sql`). Until it's run, ⊕ offers only Photos and Doodle, and several photos are sent one by one.
+
+**Optional:** so notifications say "📷 3 photos", "📎 notes.pdf" or "Sticker" instead of "New message", update `send-push` the same way as before: **Edge Functions → send-push → Code**, paste the new [`index.ts`](supabase/functions/send-push/index.ts), deploy, and check **Verify JWT with legacy secret** is still **off**.
+
+Tap **⊕** next to the message box:
+
+- **Photos:** pick up to 10. Before sending you can crop (free or square), rotate, draw (8 colours, 3 brush sizes) and add text you can drag around, add or remove photos, and write a caption. Two or more arrive as one **album**; tap it to swipe through them.
+- **Doodle:** a blank page to draw on with your finger, sent as a picture.
+- **Stickers:** tap **New**, pick a photo, crop it, choose square, rounded or circle, add text if you like, and **Save sticker**. Tap a sticker to send it. Press and hold a friend's sticker → **Save to my stickers**. **Edit** in the sticker tray removes stickers.
+- **File:** anything up to 25 MB. Tap a file in the chat to download it.
+
+**Wallpaper:** in a chat, **⋮ → Wallpaper**. Pick a pattern (they follow light and dark mode, and *Glow* takes the chat's colour) or your own photo.
+
 ## Updates
 
 Boom Boom checks for a new version whenever you come back to it, and every 15 minutes while it's open. If you're not in the middle of something, it reloads itself straight away (and reopens the chat you were in). If you're typing, a yellow **Boom Boom has been updated. Tap to refresh.** button appears instead, and your half-written message is kept.
@@ -177,9 +198,16 @@ where email = 'friend@example.com';
 
 **Notifications show the message text** on the lock screen, like most messaging apps. They travel through Google's, Apple's or Mozilla's push service encrypted, so those services can't read them. To show your nicknames, each device keeps a small list of them for its notifications; it never leaves the device and is wiped when you sign out.
 
+**Albums, edits, files, stickers and wallpapers.**
+- *Edited photos and doodles* are re-saved on your phone as a high-quality JPEG (doodles as PNG), which carries no hidden details at all. Photos you don't edit are still sent at full original quality.
+- *Files* can only be downloaded by the people in that chat. Boom Boom always saves them to your device and never opens them inside the app, so a file can't run anything in Boom Boom. Only open files from people you trust, as with any app.
+- *Stickers* you make can be seen by any signed-in Boom Boom member, so the ones you send show up for your friends. Your tray itself is private. Removing a sticker you've already sent keeps it in those chats.
+- *Wallpaper photos* are visible only to you.
+- Files, stickers and wallpapers share the free 1 GB of storage with photos.
+
 **Scheduled messages** are stored in your Supabase database until they're sent, readable only by you (and you as the project owner). They're sent by the database itself, so they go out even if every phone is off.
 
-**Limits in this version.** One-to-one chats only. Messages up to 4,000 characters, photos up to 50 MB. Unsent messages leave a "message unsent" marker. Edits are allowed for 15 minutes. Scheduled messages are text only.
+**Limits in this version.** One-to-one chats only. Messages up to 4,000 characters, photos up to 50 MB, up to 10 photos per album, files up to 25 MB, 200 stickers per person. Unsent messages leave a "message unsent" marker. Edits are allowed for 15 minutes. Scheduled messages are text only.
 
 ## Ideas for later
 
@@ -194,6 +222,7 @@ where email = 'friend@example.com';
 | `style.css` | All the styling, including dark mode |
 | `app.js` | Everything the app does: sign-in, chats, sending, photos, reactions, replies, unsend, send later, nicknames, live updates |
 | `photo.js` | Removes location and camera details from photos without losing quality; makes previews |
+| `editor.js` | The photo editor: crop, rotate, draw and text, for photos, doodles and stickers |
 | `config.js` | Your Supabase URL and publishable key |
 | `sw.js` | Service worker: shows notifications (with your nicknames) and opens the right chat when you tap one |
 | `manifest.webmanifest`, `icons/` | App name and icons for installing |
@@ -203,13 +232,14 @@ where email = 'friend@example.com';
 | `supabase/avatars-and-delete.sql` | Profile pictures and delete chat. Run once |
 | `supabase/chat-extras.sql` | Typing, edit, chat colours, and the CPR check-in. Run once |
 | `supabase/send-later-nicknames.sql` | Scheduled messages (sent every minute by Supabase Cron) and nicknames. Run once |
+| `supabase/media-extras.sql` | Albums, files, stickers and chat wallpapers. Run once |
 | `.github/workflows/cpr.yml` | CPR: keeps the free Supabase project awake |
 | `supabase/functions/send-push/` | The notification sender (Supabase Edge Function) |
 | `supabase/tests/`, `tests/` | Automated checks (see below) |
 
 ## Testing
 
-**Database rules** (176 checks: outsiders can't read or join chats or see their photos, nobody can send, react or unsend as someone else, nobody can see your scheduled messages or nicknames, a failing notification never blocks a message...). You need a local PostgreSQL (version 15+). Use a fresh database for each test file:
+**Database rules** (247 checks: outsiders can't read or join chats or see their photos or files, nobody can send, react or unsend as someone else, nobody can see your scheduled messages, nicknames or wallpapers, a failing notification never blocks a message...). You need a local PostgreSQL (version 15+). Use a fresh database for each test file:
 
 ```bash
 createdb boomtest
@@ -224,7 +254,8 @@ psql -d boomtest -f supabase/features.sql
 psql -d boomtest -f supabase/avatars-and-delete.sql
 psql -d boomtest -f supabase/chat-extras.sql
 grep -v 'create extension if not exists pg_cron' supabase/send-later-nicknames.sql | psql -d boomtest
-psql -d boomtest -f supabase/tests/security_tests.sql  # or push_tests / features_tests / avatars_delete_tests / extras_tests / later_nicknames_tests
+psql -d boomtest -f supabase/media-extras.sql
+psql -d boomtest -f supabase/tests/security_tests.sql  # or push_tests / features_tests / avatars_delete_tests / extras_tests / later_nicknames_tests / media_tests
 dropdb boomtest
 ```
 
