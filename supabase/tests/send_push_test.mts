@@ -203,6 +203,19 @@ function fakeDb(tables: Record<string, Row[]>, log: string[]) {
   check(r4.body.skipped === "no such message", "Made-up message ids are ignored");
   const r5 = await core.handleMessage("7; drop table", { db, vapid, fetchFn, now });
   check(r5.status === 400, "Junk input is rejected");
+
+  // Photos and unsent messages
+  tables.messages.push(
+    { id: 8, conversation_id: "conv1", sender_id: A, body: "", photo_path: "conv1/x.jpg", created_at: new Date(now - 1000).toISOString() },
+    { id: 9, conversation_id: "conv1", sender_id: A, body: "", deleted_at: new Date(now).toISOString(), created_at: new Date(now - 1000).toISOString() },
+  );
+  const before = calls.length;
+  await core.handleMessage(8, { db, vapid, fetchFn, now });
+  const photoCall = calls.slice(before).find((c) => c.url.endsWith("/b1"))!;
+  const photoPayload = JSON.parse((await browserDecrypt(photoCall.init.body as Uint8Array, devB1, new Uint8Array(devB1.getPublicKey()), new Uint8Array(authB1))).text);
+  check(photoPayload.body === "📷 Photo", "Photo notifications say 📷 Photo and never include the image");
+  const r9 = await core.handleMessage(9, { db, vapid, fetchFn, now });
+  check(r9.body.skipped === "message was unsent", "Unsent messages don't trigger a notification");
 }
 
 console.log(results.join("\n"));

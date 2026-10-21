@@ -7,6 +7,8 @@ Created by Ashraviinraj Thinagaraj.
 ## What it does
 
 - One-to-one chats that arrive live, like any social media DM
+- Photos at full original quality, with your location and camera details removed first
+- Reactions (👍 ❤️ 😂 😮 😢 🔥), replies that quote the original, and unsend for everyone
 - Unread badges, a count in the browser tab, and a little "boom" ripple when a message lands in another chat
 - Notifications when someone messages you, even with Boom Boom closed. Tap one to jump straight into that chat
 - Installs on your home screen like a real app, with an unread count on the icon where the phone supports it
@@ -77,6 +79,14 @@ In this repo on GitHub: **Settings → Pages → Build and deployment → Deploy
 
 Sign in on your phone, sign in as a friend on another device, and send a message. It should appear on the other screen within a second.
 
+## Photos, reactions, replies and unsend (one-time server setup)
+
+**SQL Editor → New query**: paste [`supabase/features.sql`](supabase/features.sql) and **Run**, once. It adds the private photo storage, reactions, replies and unsend. Until it's run, Boom Boom keeps working without these (the photo button stays hidden).
+
+If you already deployed `send-push`, update it too so photo notifications say "📷 Photo" and unsent messages don't notify: **Edge Functions → send-push → Code**, paste the new [`index.ts`](supabase/functions/send-push/index.ts), deploy, then check **Settings → Verify JWT with legacy secret** is still **off**.
+
+**Using them:** tap the picture icon to send photos. **Press and hold** a message (right-click or the **⋯** button on a computer) to react, reply, copy or unsend.
+
 ## Notifications (one-time server setup)
 
 Notifications need one extra piece on Supabase: a small function, `send-push`, that the database calls whenever someone sends a message.
@@ -115,17 +125,24 @@ set encrypted_password = extensions.crypt('their-new-temporary-password', extens
 where email = 'friend@example.com';
 ```
 
-**Removing someone.** Deleting a user under **Authentication → Users** also deletes their profile and every message they sent. Their one-to-one chats disappear from everyone's list.
+**Removing someone.** Deleting a user under **Authentication → Users** also deletes their profile and every message they sent. Their one-to-one chats disappear from everyone's list. Their photo files stay in **Storage → photos** until you delete them there.
+
+**Photos and privacy.**
+- *Hidden details are removed on your phone, before upload*: GPS location, phone make and model, date and time, editing software, comments and embedded previews. Only the colour profile and the rotation flag are kept.
+- *Full quality*: for JPEG, PNG, WebP and GIF the picture data is copied byte for byte, not re-compressed. Other formats (like HEIC) become a high-quality JPEG.
+- *Who can see a photo*: only people in that chat, and you as the Supabase owner. The bucket is private and there are no public links; photos load only for signed-in members.
+- *Unsend* deletes the photo files from the server. It can't undo a screenshot, a saved copy, or a notification someone already saw.
+- *Storage*: the Free plan has 1 GB of file storage and 5 GB of downloads a month. At full quality that's very roughly 200–400 phone photos. Chats show a small preview, and the full photo only downloads when someone opens it. When storage fills up, sending photos fails until you delete some (Storage in the dashboard) or upgrade.
+- Photos aren't end-to-end encrypted, the same as messages.
 
 **Notifications show the message text** on the lock screen, like most messaging apps. They travel through Google's, Apple's or Mozilla's push service encrypted, so those services can't read them.
 
-**Limits in this version.** One-to-one chats only, text only, up to 4,000 characters per message, no editing or deleting.
+**Limits in this version.** One-to-one chats only. Messages up to 4,000 characters, photos up to 50 MB. Unsent messages leave a "message unsent" marker; there's no editing.
 
 ## Ideas for later
 
 - Group chats (the database is already shaped for them)
 - Typing indicators and read receipts
-- Photos
 
 ## Files
 
@@ -133,28 +150,37 @@ where email = 'friend@example.com';
 | --- | --- |
 | `index.html` | The page: sign in, profile setup, chat list, chat, settings |
 | `style.css` | All the styling, including dark mode |
-| `app.js` | Everything the app does: sign-in, loading chats, sending, live updates |
+| `app.js` | Everything the app does: sign-in, chats, sending, photos, reactions, replies, unsend, live updates |
+| `photo.js` | Removes location and camera details from photos without losing quality; makes previews |
 | `config.js` | Your Supabase URL and publishable key |
 | `sw.js` | Service worker: shows notifications and opens the right chat when you tap one |
 | `manifest.webmanifest`, `icons/` | App name and icons for installing |
 | `supabase/schema.sql` | Tables, security rules and helper functions. Run once in Supabase |
 | `supabase/push.sql` | Notification devices and the trigger that calls send-push. Run once |
+| `supabase/features.sql` | Private photo storage, reactions, replies and unsend. Run once |
 | `supabase/functions/send-push/` | The notification sender (Supabase Edge Function) |
 | `supabase/tests/`, `tests/` | Automated checks (see below) |
 
 ## Testing
 
-**Database rules** (63 checks: outsiders can't read or join chats, nobody can send as someone else, devices and notifications stay private, a failing notification never blocks a message...). You need a local PostgreSQL (version 15+):
+**Database rules** (103 checks: outsiders can't read or join chats or see their photos, nobody can send, react or unsend as someone else, a failing notification never blocks a message...). You need a local PostgreSQL (version 15+). Use a fresh database for each test file:
 
 ```bash
 createdb boomtest
 psql -d boomtest -f supabase/tests/supabase_stub.sql   # imitates a fresh Supabase project
 psql -d boomtest -f supabase/tests/net_stub.sql        # stands in for pg_net
+psql -d boomtest -f supabase/tests/storage_stub.sql    # stands in for Supabase Storage
 psql -d boomtest -f supabase/schema.sql
 grep -v 'create extension if not exists pg_net' supabase/push.sql | psql -d boomtest
-psql -d boomtest -f supabase/tests/security_tests.sql  # prints PASS / FAIL for each check
-psql -d boomtest -f supabase/tests/push_tests.sql
+psql -d boomtest -f supabase/features.sql
+psql -d boomtest -f supabase/tests/security_tests.sql  # or push_tests.sql / features_tests.sql
 dropdb boomtest
+```
+
+**Photo privacy** (30 checks with real photos full of GPS, camera and comment data, verified pixel for pixel with an independent image library). Needs Python with Pillow:
+
+```bash
+python3 tests/photo_test.py
 ```
 
 **Notification sender** (encryption checked byte-for-byte against the official RFC 8291 example) and **service worker**, with Node 22+:

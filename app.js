@@ -5,6 +5,7 @@
 
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
 import * as config from './config.js';
+import { preparePhoto } from './photo.js';
 
 const { SUPABASE_URL, SUPABASE_KEY } = config;
 const VAPID_KEY = (config.VAPID_PUBLIC_KEY || '').trim();
@@ -21,6 +22,9 @@ const GROUP_GAP_MS = 5 * 60 * 1000;
 const USERNAME_RE = /^[a-z0-9_]{3,20}$/;
 const URL_RE = /\bhttps?:\/\/[^\s<>"']+/gi;
 const isTouch = window.matchMedia('(pointer: coarse)').matches;
+const REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🔥'];
+const MSG_COLUMNS_V1 = 'id, conversation_id, sender_id, body, created_at';
+const MSG_COLUMNS_V2 = `${MSG_COLUMNS_V1}, reply_to, photo_path, photo_thumb_path, photo_width, photo_height, deleted_at`;
 const AVATAR_COLOURS = ['#3346B8', '#C8174B','#0F7B6C', '#9A4A00', '#6A3FB5', '#2F6E1F', '#B0306E', '#1F6F9F'];
 
 function h(tag, attrs = {}, ...kids) {
@@ -199,12 +203,18 @@ const state = {
   drafts: new Map(),     // conversation id -> unsent text
   seen: new Set(),       // message ids already counted
   pulse: null,           // conversation whose badge should ripple
+  reactions: new Map(),  // message id -> Map(user id -> emoji)
+  quoted: new Map(),     // message id -> message (originals of replies not on screen)
+  replyTo: null,         // message being replied to in the open chat
+  photoUrls: new Map(),  // storage path -> Promise<object URL>
+  features: false,       // photos/reactions/replies/unsend set up on the server?
   channel: null,
   live: false,
   started: false,
 };
 
 function resetState() {
+  for (const p of state.photoUrls.values()) p.then((url) => URL.revokeObjectURL(url), () => {});
   state.user = null;
   state.me = null;
   state.profiles = new Map();
@@ -215,8 +225,22 @@ function resetState() {
   state.drafts = new Map();
   state.seen = new Set();
   state.pulse = null;
+  state.reactions = new Map();
+  state.quoted = new Map();
+  state.replyTo = null;
+  state.photoUrls = new Map();
+  state.features = false;
   state.live = false;
   state.started = false;
+}
+
+const msgColumns = () => (state.features ? MSG_COLUMNS_V2 : MSG_COLUMNS_V1);
+
+// Has features.sql been run? (The app keeps working without it.)
+async function detectFeatures() {
+  const { error } = await supabase.from('messages').select('deleted_at').limit(1);
+  state.features = !error;
+  $('btn-attach').hidden = !state.features;
 }
 
 // ---------------------------------------------------------------------
@@ -282,6 +306,7 @@ async function startApp() {
   state.started = true;
   showScreen('screen-app');
   closeChat({ quiet: true });
+  await detectFeatures();
   await loadChats();
   subscribe();
   renderNudge();
@@ -355,7 +380,7 @@ async function loadChats() {
 async function fetchLatest(convId) {
   const { data, error } = await supabase
     .from('messages')
-    .select('id, conversation_id, sender_id, body, created_at')
+    .select(msgColumns())
     .eq('conversation_id', convId)
     .order('id', { ascending: false })
     .limit(PAGE_SIZE);
@@ -369,6 +394,7 @@ async function fetchLatest(convId) {
   const local = (state.messages.get(convId) || []).filter((m) => m.pending || m.failed);
   state.messages.set(convId, [...list, ...local]);
   state.hasMore.set(convId, data.length === PAGE_SIZE);
+  await loadExtras(convId, list);
   return true;
 }
 
@@ -378,7 +404,7 @@ async function fetchOlder(convId) {
   if (!oldest) return;
   const { data, error } = await supabase
     .from('messages')
-    .select('id, conversation_id, sender_id, body, created_at')
+    .select(msgColumns())
     .eq('conversation_id', convId)
     .lt('id', oldest.id)
     .order('id', { ascending: false })
@@ -390,6 +416,35 @@ async function fetchOlder(convId) {
   data.forEach((m) => state.seen.add(m.id));
   list.unshift(...data.reverse());
   state.hasMore.set(convId, data.length === PAGE_SIZE);
+  await loadExtras(convId, data);
+}
+
+// Reactions for these messages, and the originals of any replies among them.
+async function loadExtras(convId, msgs) {
+  if (!state.features || !msgs.length) return;
+  const ids = msgs.map((m) => m.id).filter((id) => typeof id === 'number');
+  const { data } = await supabase
+    .from('message_reactions')
+    .select('message_id, user_id, emoji')
+    .eq('conversation_id', convId)
+    .in('message_id', ids);
+  for (const r of data || []) setReaction(r.message_id, r.user_id, r.emoji);
+  await loadQuoted(convId, msgs);
+}
+
+async function loadQuoted(convId, msgs) {
+  const have = new Set((state.messages.get(convId) || []).map((m) => m.id));
+  const missing = [...new Set(msgs.map((m) => m.reply_to).filter((id) => id && !have.has(id) && !state.quoted.has(id)))];
+  if (!missing.length) return;
+  const { data } = await supabase.from('messages').select(MSG_COLUMNS_V2).in('id', missing);
+  for (const m of data || []) state.quoted.set(m.id, m);
+}
+
+function setReaction(messageId, userId, emoji) {
+  if (!state.reactions.has(messageId)) state.reactions.set(messageId, new Map());
+  const map = state.reactions.get(messageId);
+  if (emoji) map.set(userId, emoji);
+  else map.delete(userId);
 }
 
 // Catch up on anything that arrived while the connection was down.
@@ -401,7 +456,7 @@ async function fetchNewer(convId) {
   const newestId = real[real.length - 1].id;
   const { data, error } = await supabase
     .from('messages')
-    .select('id, conversation_id, sender_id, body, created_at')
+    .select(msgColumns())
     .eq('conversation_id', convId)
     .gt('id', newestId)
     .order('id', { ascending: true })
@@ -414,6 +469,7 @@ async function fetchNewer(convId) {
       insertSorted(list, m);
     }
   }
+  await loadExtras(convId, data);
   return true;
 }
 
@@ -423,11 +479,20 @@ async function fetchNewer(convId) {
 
 function subscribe() {
   if (state.channel) supabase.removeChannel(state.channel);
-  state.channel = supabase
+  let channel = supabase
     .channel('boom-inbox')
     .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, (payload) => {
       onIncoming(payload.new);
-    })
+    });
+  if (state.features) {
+    // Only rows you're allowed to see arrive (security rules apply to inserts
+    // and updates, which is why unsend and reactions are updates, not deletes).
+    channel = channel
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'messages' }, (payload) => onMessageUpdate(payload.new))
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'message_reactions' }, (payload) => onReaction(payload.new))
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'message_reactions' }, (payload) => onReaction(payload.new));
+  }
+  state.channel = channel
     .subscribe((status) => {
       if (!state.started) return;
       if (status === 'SUBSCRIBED') {
@@ -493,12 +558,32 @@ function onIncoming(m) {
     renderMessages(mine);
     if (!mine && !nearBottom) $('btn-jump').hidden = false;
     if (viewing) markRead(m.conversation_id);
+    if (m.reply_to) loadQuoted(m.conversation_id, [m]).then(() => renderMessages());
   }
 
   if (!mine) {
     const name = state.profiles.get(m.sender_id)?.display_name || 'Someone';
-    announce(m.conversation_id === state.activeId ? `${name}: ${m.body}` : `New message from ${name}`);
+    const what = m.photo_path ? 'sent a photo' : m.body;
+    announce(m.conversation_id === state.activeId ? `${name}: ${what}` : `New message from ${name}`);
   }
+}
+
+// Someone unsent a message.
+function onMessageUpdate(m) {
+  if (!state.started) return;
+  const list = state.messages.get(m.conversation_id);
+  const existing = list?.find((x) => x.id === m.id);
+  if (existing) Object.assign(existing, m);
+  if (state.quoted.has(m.id)) state.quoted.set(m.id, m);
+  if (m.deleted_at) state.reactions.delete(m.id);
+  if (m.conversation_id === state.activeId) renderMessages();
+  loadChats(); // the chat list preview may have changed
+}
+
+function onReaction(r) {
+  if (!state.started) return;
+  setReaction(r.message_id, r.user_id, r.emoji);
+  if (r.conversation_id === state.activeId) renderMessages();
 }
 
 // For screen readers: say what arrived without re-reading the whole chat.
@@ -521,8 +606,16 @@ function insertSorted(list, m) {
 
 function dropMatchingPending(list, m) {
   if (m.sender_id !== state.user.id) return;
-  const i = list.findIndex((x) => (x.pending || x.failed) && x.body === m.body);
+  const i = m.photo_path
+    ? list.findIndex((x) => (x.pending || x.failed) && x.photo_path === m.photo_path)
+    : list.findIndex((x) => (x.pending || x.failed) && !x.upload && x.body === m.body);
   if (i !== -1) list.splice(i, 1);
+}
+
+function messageKind(m) {
+  if (m.deleted_at) return 'unsent';
+  if (m.photo_path) return 'photo';
+  return 'text';
 }
 
 function updateChatPreview(m, countAsUnread) {
@@ -530,6 +623,7 @@ function updateChatPreview(m, countAsUnread) {
   if (!chat) return;
   chat.last_message_body = m.body;
   chat.last_message_sender = m.sender_id;
+  chat.last_message_kind = messageKind(m);
   chat.last_message_at = m.created_at;
   if (countAsUnread) {
     chat.unread_count += 1;
@@ -579,6 +673,33 @@ function chatName(chat) {
   return state.profiles.get(chat.other_user_id)?.display_name || 'Someone';
 }
 
+function personName(userId) {
+  if (userId === state.user?.id) return 'You';
+  return state.profiles.get(userId)?.display_name || 'Someone';
+}
+
+function previewText(kind, body, senderId) {
+  const mine = senderId === state.user?.id;
+  const text = (body || '').replace(/\s+/g, ' ').trim();
+  if (kind === 'unsent') return mine ? 'You unsent a message' : 'Message unsent';
+  if (kind === 'photo') return (mine ? 'You: ' : '') + (text ? `📷 ${text}` : '📷 Photo');
+  if (!text) return 'No messages yet';
+  return (mine ? 'You: ' : '') + text;
+}
+
+// One line describing a message, for reply quotes.
+function snippet(m) {
+  if (!m) return 'Original message';
+  if (m.deleted_at) return 'Message unsent';
+  const text = (m.body || '').replace(/\s+/g, ' ').trim();
+  if (m.photo_path) return text ? `📷 ${text}` : '📷 Photo';
+  return text;
+}
+
+function findMessage(convId, id) {
+  return (state.messages.get(convId) || []).find((m) => m.id === id) || state.quoted.get(id) || null;
+}
+
 function renderChatList() {
   const list = $('chat-list');
   list.replaceChildren();
@@ -589,10 +710,7 @@ function renderChatList() {
     const name = chatName(chat);
     const unread = chat.unread_count > 0;
     const active = chat.conversation_id === state.activeId;
-    let preview = 'No messages yet';
-    if (chat.last_message_body) {
-      preview = (chat.last_message_sender === state.user?.id ? 'You: ' : '') + chat.last_message_body.replace(/\s+/g, ' ');
-    }
+    const preview = previewText(chat.last_message_kind, chat.last_message_body, chat.last_message_sender);
 
     const badge = unread
       ? h('span', { class: 'badge', 'aria-label': `${chat.unread_count} unread` }, chat.unread_count > 99 ? '99+' : String(chat.unread_count))
@@ -666,27 +784,163 @@ function renderMessages(stickToBottom = false) {
 
 function messageEl(m, grouped, tail) {
   const mine = m.sender_id === state.user.id;
-  const classes = ['msg', mine ? 'mine' : 'theirs'];
-  if (grouped) classes.push('grouped');
+  const side = mine ? 'mine' : 'theirs';
+  const unsent = !!m.deleted_at;
+  const local = m.pending || m.failed;
+
+  const wrapClasses = ['msg-wrap', side];
+  if (grouped) wrapClasses.push('grouped');
+  const classes = ['msg', side];
   if (tail) classes.push('tail');
   if (m.pending) classes.push('pending');
   if (m.failed) classes.push('failed');
+  if (unsent) classes.push('unsent');
+  const photo = m.photo_thumb_path || m.photo_local;
+  if (photo && !unsent) classes.push('has-photo');
 
-  const body = h('span', { class: 'msg-body' });
-  appendLinkified(body, m.body);
+  const bubble = h('div', { class: classes.join(' '), 'data-id': m.id });
+
+  if (unsent) {
+    bubble.append(h('span', { class: 'msg-body' }, mine ? 'You unsent a message' : `${personName(m.sender_id)} unsent a message`));
+  } else {
+    if (m.reply_to) {
+      const original = findMessage(m.conversation_id, m.reply_to);
+      bubble.append(h('button', {
+        type: 'button',
+        class: 'msg-quote',
+        'aria-label': `Reply to ${original ? personName(original.sender_id) : 'a message'}: ${snippet(original)}. Show original.`,
+        onclick: (e) => { e.stopPropagation(); jumpToMessage(m.reply_to); },
+      },
+      h('strong', {}, original ? personName(original.sender_id) : ''),
+      h('span', {}, original ? snippet(original) : 'Loading…')));
+    }
+    if (photo) {
+      const ratio = m.photo_width && m.photo_height ? `${m.photo_width} / ${m.photo_height}` : '4 / 3';
+      const img = h('img', { alt: 'Photo', style: `aspect-ratio:${ratio}`, decoding: 'async' });
+      if (m.photo_local) img.src = m.photo_local;
+      else photoUrl(m.photo_thumb_path).then((url) => { img.src = url; }, () => { img.alt = "Photo couldn't load"; });
+      bubble.append(h('button', {
+        type: 'button',
+        class: 'msg-photo',
+        'aria-label': 'Open photo',
+        onclick: (e) => { if (!local) { e.stopPropagation(); openViewer(m); } },
+      }, img));
+    }
+    if (m.body) {
+      const body = h('span', { class: 'msg-body' });
+      appendLinkified(body, m.body);
+      bubble.append(body);
+    }
+  }
 
   let meta = clockTime(m.created_at);
-  if (m.pending) meta = 'Sending…';
+  if (m.pending) meta = m.upload || m.preparing ? 'Sending photo…' : 'Sending…';
   if (m.failed) meta = 'Not sent. Tap to retry.';
+  bubble.append(h('span', { class: 'msg-meta' }, meta));
 
-  const el = h('div', { class: classes.join(' ') }, body, h('span', { class: 'msg-meta' }, meta));
+  const wrap = h('div', { class: wrapClasses.join(' '), 'data-id': m.id }, bubble);
+
   if (m.failed) {
-    el.setAttribute('role', 'button');
-    el.tabIndex = 0;
-    el.addEventListener('click', () => retry(m));
-    el.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); retry(m); } });
+    bubble.setAttribute('role', 'button');
+    bubble.tabIndex = 0;
+    bubble.addEventListener('click', () => retry(m));
+    bubble.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); retry(m); } });
+  } else if (!local && !unsent) {
+    bubble.tabIndex = 0;
+    attachMessageMenu(bubble, m);
+    wrap.append(reactionsEl(m));
+    wrap.append(h('button', {
+      type: 'button', class: 'msg-more', 'aria-label': 'React, reply and more', title: 'React, reply and more',
+      onclick: () => openMessageMenu(m),
+    }, '⋯'));
   }
-  return el;
+  return wrap;
+}
+
+function reactionsEl(m) {
+  const map = state.reactions.get(m.id);
+  const box = h('div', { class: 'msg-reactions' });
+  if (!map || !map.size) return box;
+  for (const emoji of REACTIONS) {
+    const who = [...map].filter(([, e]) => e === emoji).map(([uid]) => uid);
+    if (!who.length) continue;
+    const mineToo = who.includes(state.user.id);
+    const names = who.map(personName).join(', ');
+    box.append(h('button', {
+      type: 'button',
+      class: `chip${mineToo ? ' mine' : ''}`,
+      'aria-label': `${emoji} from ${names}${mineToo ? '. Tap to remove yours' : ''}`,
+      title: names,
+      onclick: () => react(m, emoji),
+    }, emoji, who.length > 1 ? h('span', {}, String(who.length)) : null));
+  }
+  return box;
+}
+
+// Press and hold (phones), right-click or Enter (computers) opens the menu.
+let suppressClickUntil = 0;
+function attachMessageMenu(el, m) {
+  let timer = null;
+  let startX = 0;
+  let startY = 0;
+  const cancel = () => { clearTimeout(timer); timer = null; };
+  el.addEventListener('pointerdown', (e) => {
+    if (e.pointerType === 'mouse') return;
+    startX = e.clientX;
+    startY = e.clientY;
+    cancel();
+    timer = setTimeout(() => {
+      timer = null;
+      suppressClickUntil = Date.now() + 700;
+      navigator.vibrate?.(10);
+      openMessageMenu(m);
+    }, 450);
+  });
+  el.addEventListener('pointermove', (e) => {
+    if (timer && Math.hypot(e.clientX - startX, e.clientY - startY) > 10) cancel();
+  });
+  el.addEventListener('pointerup', cancel);
+  el.addEventListener('pointercancel', cancel);
+  el.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    cancel();
+    suppressClickUntil = Date.now() + 700;
+    openMessageMenu(m);
+  });
+  el.addEventListener('click', (e) => {
+    if (Date.now() < suppressClickUntil) { e.preventDefault(); e.stopPropagation(); }
+  }, true);
+  el.addEventListener('keydown', (e) => {
+    if (e.target === el && (e.key === 'Enter' || e.key === ' ' || e.key === 'ContextMenu')) {
+      e.preventDefault();
+      openMessageMenu(m);
+    }
+  });
+}
+
+function jumpToMessage(id) {
+  const el = $('message-list').querySelector(`.msg[data-id="${id}"]`);
+  if (!el) {
+    toast(state.hasMore.get(state.activeId) ? 'That message is further up. Tap "Show earlier messages".' : "That message isn't available.");
+    return;
+  }
+  el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  el.classList.remove('flash');
+  void el.offsetWidth; // restart the highlight
+  el.classList.add('flash');
+}
+
+// Photos are private: they're downloaded with your login, never via a public link.
+function photoUrl(path) {
+  if (!state.photoUrls.has(path)) {
+    const p = supabase.storage.from('photos').download(path).then(({ data, error }) => {
+      if (error || !data) throw error || new Error('download failed');
+      return URL.createObjectURL(data);
+    });
+    p.catch(() => state.photoUrls.delete(path)); // allow a retry later
+    state.photoUrls.set(path, p);
+  }
+  return state.photoUrls.get(path);
 }
 
 // ---------------------------------------------------------------------
@@ -694,7 +948,10 @@ function messageEl(m, grouped, tail) {
 // ---------------------------------------------------------------------
 
 async function openChat(convId) {
-  if (state.activeId && state.activeId !== convId) saveDraft();
+  if (state.activeId && state.activeId !== convId) {
+    saveDraft();
+    clearReply();
+  }
   state.activeId = convId;
 
   if (!activeChat()) await loadChats();
@@ -732,6 +989,7 @@ async function openChat(convId) {
 
 function closeChat({ quiet = false } = {}) {
   if (state.activeId) saveDraft();
+  clearReply();
   state.activeId = null;
   $('screen-app').classList.remove('show-chat');
   $('conversation-inner').hidden = true;
@@ -757,6 +1015,22 @@ function autosize() {
   $('btn-send').disabled = !input.value.trim();
 }
 
+function newTemp(convId, fields) {
+  const temp = {
+    id: `pending-${++pendingSeq}`,
+    conversation_id: convId,
+    sender_id: state.user.id,
+    body: '',
+    created_at: new Date().toISOString(),
+    pending: true,
+    reply_to: typeof state.replyTo?.id === 'number' ? state.replyTo.id : null,
+    ...fields,
+  };
+  if (!state.messages.has(convId)) state.messages.set(convId, []);
+  state.messages.get(convId).push(temp);
+  return temp;
+}
+
 async function sendCurrent() {
   const convId = state.activeId;
   const input = $('composer-input');
@@ -767,31 +1041,17 @@ async function sendCurrent() {
   autosize();
   state.drafts.delete(convId);
 
-  const temp = {
-    id: `pending-${++pendingSeq}`,
-    conversation_id: convId,
-    sender_id: state.user.id,
-    body,
-    created_at: new Date().toISOString(),
-    pending: true,
-  };
-  if (!state.messages.has(convId)) state.messages.set(convId, []);
-  state.messages.get(convId).push(temp);
+  const temp = newTemp(convId, { body });
+  clearReply();
   renderMessages(true);
   await deliver(temp);
 }
 
-async function deliver(temp) {
+// Swap a sending message for the saved one.
+function settle(temp, data, error) {
   const convId = temp.conversation_id;
-  const { data, error } = await supabase
-    .from('messages')
-    .insert({ conversation_id: convId, body: temp.body })
-    .select('id, conversation_id, sender_id, body, created_at')
-    .single();
-
   const list = state.messages.get(convId) || [];
   const index = list.indexOf(temp);
-
   if (error) {
     temp.pending = false;
     temp.failed = true;
@@ -805,6 +1065,13 @@ async function deliver(temp) {
   if (state.activeId === convId) renderMessages();
 }
 
+async function deliver(temp) {
+  const row = { conversation_id: temp.conversation_id, body: temp.body };
+  if (temp.reply_to) row.reply_to = temp.reply_to;
+  const { data, error } = await supabase.from('messages').insert(row).select(msgColumns()).single();
+  settle(temp, data, error);
+}
+
 function retry(m) {
   const list = state.messages.get(m.conversation_id);
   if (!list) return;
@@ -814,7 +1081,196 @@ function retry(m) {
   m.pending = true;
   list.push(m);
   renderMessages(true);
-  deliver(m);
+  if (m.upload) deliverPhoto(m);
+  else deliver(m);
+}
+
+// ---------------------------------------------------------------------
+//  Photos
+// ---------------------------------------------------------------------
+
+async function sendPhotos(files) {
+  const convId = state.activeId;
+  if (!convId || !files.length) return;
+  const temps = [...files].map((file) => ({ file, temp: newTemp(convId, { preparing: true }) }));
+  clearReply();
+  renderMessages(true);
+  for (const { file, temp } of temps) {
+    try {
+      // Strips location and camera details; keeps full quality (see photo.js).
+      temp.upload = await preparePhoto(file);
+      temp.preparing = false;
+      temp.photo_local = URL.createObjectURL(temp.upload.thumb);
+      temp.photo_width = temp.upload.width;
+      temp.photo_height = temp.upload.height;
+    } catch (error) {
+      const list = state.messages.get(convId) || [];
+      const i = list.indexOf(temp);
+      if (i !== -1) list.splice(i, 1);
+      if (state.activeId === convId) renderMessages();
+      toast(error?.message || "Couldn't read that photo.");
+      continue;
+    }
+    if (state.activeId === convId) renderMessages(true);
+    await deliverPhoto(temp);
+  }
+}
+
+async function deliverPhoto(temp) {
+  const convId = temp.conversation_id;
+  const id = crypto.randomUUID();
+  const photoPath = `${convId}/${id}.${temp.upload.ext}`;
+  const thumbPath = `${convId}/${id}-thumb.jpg`;
+  temp.photo_path = photoPath;
+  const bucket = supabase.storage.from('photos');
+  const uploaded = [];
+  let error = null;
+  let data = null;
+  try {
+    const a = await bucket.upload(photoPath, temp.upload.original, { contentType: temp.upload.mime, upsert: false, cacheControl: '31536000' });
+    if (a.error) throw a.error;
+    uploaded.push(photoPath);
+    const b = await bucket.upload(thumbPath, temp.upload.thumb, { contentType: 'image/jpeg', upsert: false, cacheControl: '31536000' });
+    if (b.error) throw b.error;
+    uploaded.push(thumbPath);
+    const row = {
+      conversation_id: convId,
+      body: '',
+      photo_path: photoPath,
+      photo_thumb_path: thumbPath,
+      photo_width: temp.upload.width,
+      photo_height: temp.upload.height,
+    };
+    if (temp.reply_to) row.reply_to = temp.reply_to;
+    const res = await supabase.from('messages').insert(row).select(msgColumns()).single();
+    if (res.error) throw res.error;
+    data = res.data;
+  } catch (e) {
+    error = e;
+    if (uploaded.length) bucket.remove(uploaded).catch(() => {}); // don't leave half-sent files behind
+  }
+  if (!error) {
+    // Reuse the preview we already have instead of downloading it again.
+    state.photoUrls.set(thumbPath, Promise.resolve(temp.photo_local));
+  }
+  settle(temp, data, error);
+  if (error) toast(error?.statusCode === '413' || /exceeded|too large|size/i.test(error?.message || '')
+    ? 'That photo is too big for the free storage plan.'
+    : "Photo didn't send. Tap it to try again.");
+}
+
+// Full-size viewer.
+async function openViewer(m) {
+  const dlg = $('dlg-photo');
+  const img = $('viewer-img');
+  const save = $('viewer-save');
+  const status = $('viewer-status');
+  img.removeAttribute('src');
+  save.hidden = true;
+  status.hidden = false;
+  status.textContent = 'Loading full photo…';
+  dlg.showModal();
+  try {
+    img.src = await photoUrl(m.photo_thumb_path); // quick preview first
+  } catch { /* the full photo below may still work */ }
+  try {
+    const url = await photoUrl(m.photo_path);
+    if (!dlg.open) return;
+    img.src = url;
+    save.href = url;
+    save.download = `boom-boom-${new Date(m.created_at).toISOString().slice(0, 10)}-${m.id}.${m.photo_path.split('.').pop()}`;
+    save.hidden = false;
+    status.hidden = true;
+  } catch {
+    status.textContent = "Couldn't load the full photo. Check your connection.";
+  }
+}
+
+// ---------------------------------------------------------------------
+//  Reactions, replies, unsend
+// ---------------------------------------------------------------------
+
+let menuMessage = null;
+let unsendArmed = null;
+
+function openMessageMenu(m) {
+  const dlg = $('dlg-msg');
+  if (dlg.open || m.deleted_at || m.pending || m.failed) return;
+  menuMessage = m;
+  const mine = m.sender_id === state.user.id;
+  const myReaction = state.reactions.get(m.id)?.get(state.user.id) || null;
+
+  const row = $('react-row');
+  row.replaceChildren(...REACTIONS.map((emoji) => h('button', {
+    type: 'button',
+    class: `react${emoji === myReaction ? ' chosen' : ''}`,
+    'aria-label': emoji === myReaction ? `Remove ${emoji}` : `React with ${emoji}`,
+    'aria-pressed': emoji === myReaction ? 'true' : 'false',
+    onclick: () => { dlg.close(); react(m, emoji); },
+  }, emoji)));
+
+  row.hidden = !state.features;
+  $('act-reply').hidden = !state.features;
+  $('act-copy').hidden = !m.body;
+  $('act-photo').hidden = !m.photo_path;
+  $('act-unsend').hidden = !state.features || !mine;
+  resetUnsend();
+  $('msg-preview').textContent = `${personName(m.sender_id)}: ${snippet(m)}`;
+  dlg.showModal();
+}
+
+function resetUnsend() {
+  clearTimeout(unsendArmed);
+  unsendArmed = null;
+  const b = $('act-unsend');
+  b.textContent = 'Unsend';
+  b.classList.remove('armed');
+}
+
+async function react(m, emoji) {
+  if (!state.features) return;
+  const current = state.reactions.get(m.id)?.get(state.user.id) || null;
+  const next = current === emoji ? null : emoji;
+  setReaction(m.id, state.user.id, next);
+  renderMessages();
+  const { error } = await supabase.rpc('react', { p_message_id: m.id, p_emoji: next });
+  if (error) {
+    setReaction(m.id, state.user.id, current);
+    renderMessages();
+    toast(/unsent/i.test(error.message) ? 'That message was unsent.' : "Couldn't add your reaction. Check your connection.");
+  }
+}
+
+function startReply(m) {
+  state.replyTo = m;
+  $('reply-name').textContent = `Replying to ${m.sender_id === state.user.id ? 'yourself' : personName(m.sender_id)}`;
+  $('reply-snippet').textContent = snippet(m);
+  $('reply-bar').hidden = false;
+  $('composer-input').focus();
+}
+
+function clearReply() {
+  state.replyTo = null;
+  $('reply-bar').hidden = true;
+}
+
+async function unsend(m) {
+  const { data, error } = await supabase.rpc('unsend_message', { p_message_id: m.id });
+  if (error) {
+    toast(isNetworkError(error) ? "Couldn't unsend. Check your connection." : error.message);
+    return;
+  }
+  // Delete the photo files themselves (the database only held their names).
+  const files = (data || []).flatMap((r) => [r.photo_path, r.photo_thumb_path]).filter(Boolean);
+  if (files.length) {
+    const { error: removeError } = await supabase.storage.from('photos').remove(files);
+    if (removeError) console.warn('Photo files not removed', removeError);
+  }
+  Object.assign(m, { body: '', photo_path: null, photo_thumb_path: null, deleted_at: new Date().toISOString() });
+  state.reactions.delete(m.id);
+  if (state.replyTo?.id === m.id) clearReply();
+  renderMessages();
+  loadChats();
 }
 
 // ---------------------------------------------------------------------
@@ -1356,6 +1812,55 @@ function wireUi() {
     $('dlg-settings').close();
     await forgetThisDevice();
     await supabase.auth.signOut();
+  });
+
+  // Photos
+  $('btn-attach').addEventListener('click', () => $('photo-input').click());
+  $('photo-input').addEventListener('change', (e) => {
+    const files = [...e.target.files];
+    e.target.value = ''; // so picking the same photo again still works
+    sendPhotos(files);
+  });
+
+  // Reply bar
+  $('btn-reply-cancel').addEventListener('click', clearReply);
+
+  // Message menu
+  $('act-reply').addEventListener('click', () => {
+    $('dlg-msg').close();
+    if (menuMessage) startReply(menuMessage);
+  });
+  $('act-copy').addEventListener('click', async () => {
+    $('dlg-msg').close();
+    try {
+      await navigator.clipboard.writeText(menuMessage?.body || '');
+      toast('Copied.');
+    } catch {
+      toast("Couldn't copy on this device.");
+    }
+  });
+  $('act-photo').addEventListener('click', () => {
+    $('dlg-msg').close();
+    if (menuMessage) openViewer(menuMessage);
+  });
+  $('act-unsend').addEventListener('click', () => {
+    const button = $('act-unsend');
+    if (!unsendArmed) {
+      // Ask once more, right here: unsending can't be undone.
+      button.textContent = 'Tap again to unsend for everyone';
+      button.classList.add('armed');
+      unsendArmed = setTimeout(resetUnsend, 4000);
+      return;
+    }
+    resetUnsend();
+    $('dlg-msg').close();
+    if (menuMessage) unsend(menuMessage);
+  });
+  $('dlg-msg').addEventListener('close', resetUnsend);
+
+  // Photo viewer
+  $('dlg-photo').addEventListener('click', (e) => {
+    if (e.target === $('dlg-photo') || e.target.closest('[data-close]')) $('dlg-photo').close();
   });
 
   // Close sheets with the × button or by tapping outside them

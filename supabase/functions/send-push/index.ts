@@ -174,10 +174,12 @@ export async function handleMessage(messageId: unknown, deps: { db: any; vapid: 
     return { status: 400, body: { error: "message_id must be a positive whole number" } };
   }
 
+  // "*" so this works before and after features.sql (photos, unsend).
   const { data: msg, error: msgError } = await db
-    .from("messages").select("id, conversation_id, sender_id, body, created_at").eq("id", messageId).maybeSingle();
+    .from("messages").select("*").eq("id", messageId).maybeSingle();
   if (msgError) throw msgError;
   if (!msg) return { status: 200, body: { skipped: "no such message" } };
+  if (msg.deleted_at) return { status: 200, body: { skipped: "message was unsent" } };
   if ((deps.now ?? Date.now()) - Date.parse(msg.created_at) > MAX_AGE_MS) {
     return { status: 200, body: { skipped: "message too old" } };
   }
@@ -202,9 +204,11 @@ export async function handleMessage(messageId: unknown, deps: { db: any; vapid: 
 
   const name = senderRes.data?.display_name ?? "Someone";
   const conv = convRes.data;
+  // Photos are never put in notifications, only a "📷 Photo" label.
+  const text = preview(msg.body ?? "");
   const payload = JSON.stringify({
     title: conv?.is_group && conv?.title ? `${name} in ${conv.title}` : name,
-    body: preview(msg.body),
+    body: msg.photo_path ? (text ? `📷 ${text}` : "📷 Photo") : text,
     conversation_id: msg.conversation_id,
     message_id: msg.id,
   });
