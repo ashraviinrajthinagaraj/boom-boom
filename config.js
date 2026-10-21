@@ -9,5 +9,5 @@
 // can read what. NEVER paste the secret key (sb_secret_...) or the
 // service_role key here — those skip every security rule.
 
-export const SUPABASE_URL = 'https://YOUR-PROJECT-ID.supabase.co';
-export const SUPABASE_KEY = 'YOUR-PUBLISHABLE-KEY';
+export const SUPABASE_URL = 'https://obzxdtgfsyidbnjwpmub.supabase.co';
+export const SUPABASE_KEY = 'sb_publishable___VUtfCyvxTyRhQqdfM9Cg_jMYFrNd3';
