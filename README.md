@@ -115,7 +115,7 @@ set encrypted_password = extensions.crypt('their-new-temporary-password', extens
 where email = 'friend@example.com';
 ```
 
-**Removing someone.** Deleting a user under **Authentication → Users** also deletes their profile and every message they sent.
+**Removing someone.** Deleting a user under **Authentication → Users** also deletes their profile and every message they sent. Their one-to-one chats disappear from everyone's list.
 
 **Notifications show the message text** on the lock screen, like most messaging apps. They travel through Google's, Apple's or Mozilla's push service encrypted, so those services can't read them.
 

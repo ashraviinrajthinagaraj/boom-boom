@@ -329,7 +329,11 @@ async function loadChats() {
     else toast("Couldn't load your chats. Check your connection.");
     return;
   }
-  const chats = data.map((c) => ({ ...c, unread_count: Number(c.unread_count) || 0 }));
+  const chats = data
+    // A one-to-one chat with nobody left on the other side means that
+    // person's account was deleted, so there's no one to talk to. Hide it.
+    .filter((c) => c.is_group || c.other_user_id)
+    .map((c) => ({ ...c, unread_count: Number(c.unread_count) || 0 }));
   // Keep a just-opened empty chat on screen even though the server list hides it.
   const local = state.chats.find((c) => c.local && c.conversation_id === state.activeId);
   if (local && !chats.some((c) => c.conversation_id === local.conversation_id)) chats.unshift(local);
