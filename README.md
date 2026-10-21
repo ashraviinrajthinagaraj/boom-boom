@@ -10,6 +10,8 @@ Created by Ashraviinraj Thinagaraj.
 - Photos at full original quality, with your location and camera details removed first
 - Reactions (👍 ❤️ 😂 😮 😢 🔥), replies that quote the original, and unsend for everyone
 - Profile pictures, and "delete chat" (for you; your friend keeps their copy)
+- "typing…" (each person can switch it off), edit within 15 minutes, search, and a colour for each chat
+- **CPR**: a scheduled check-in that stops the free Supabase project from pausing
 - Updates itself: when a new version is on GitHub, the app refreshes the next time you come back to it
 - Unread badges, a count in the browser tab, and a little "boom" ripple when a message lands in another chat
 - Notifications when someone messages you, even with Boom Boom closed. Tap one to jump straight into that chat
@@ -96,6 +98,16 @@ If you already deployed `send-push`, update it too so photo notifications say "�
 - **Profile picture:** **Settings → Your profile → Add a photo.** It's cropped to a centred square and re-saved on your phone, which also removes any hidden location or camera details. Only signed-in Boom Boom members can see it.
 - **Delete chat:** open a chat and tap **⋮ → Delete chat** (tap twice). It disappears from *your* Boom Boom only. If they message you again, the chat comes back with just the new messages.
 
+## Typing, edit, search, chat colours and CPR (one-time server setup)
+
+**SQL Editor → New query**: paste [`supabase/chat-extras.sql`](supabase/chat-extras.sql) and **Run**, once (after `avatars-and-delete.sql`).
+
+- **typing…** shows under your friend's name while they type. It travels over a private live channel that only the two of you can join, and carries nothing but *who* is typing, never what. Switch yours off in **Settings → Privacy**.
+- **Edit:** press and hold your own message → **Edit**, within 15 minutes of sending. It shows "(edited)", and the old wording isn't kept. Photos can't be edited.
+- **Search:** the magnifying glass at the top of your chat list. It searches your chats only (not ones you've deleted) and jumps to the message.
+- **Chat colours:** in a chat, **⋮ → Chat colour**. Both of you see the same colour.
+- **CPR:** the [`CPR` workflow](.github/workflows/cpr.yml) gives Supabase a tiny check-in every 3 days so the free project never pauses during quiet weeks. See it under **Actions → CPR** on GitHub, where you can also tap **Run workflow** to test it. If it ever fails, it says why (usually: the project is paused, so press **Resume project** in Supabase).
+
 ## Updates
 
 Boom Boom checks for a new version whenever you come back to it, and every 15 minutes while it's open. If you're not in the middle of something, it reloads itself straight away (and reopens the chat you were in). If you're typing, a yellow **Boom Boom has been updated. Tap to refresh.** button appears instead, and your half-written message is kept.
@@ -172,23 +184,27 @@ where email = 'friend@example.com';
 | `supabase/push.sql` | Notification devices and the trigger that calls send-push. Run once |
 | `supabase/features.sql` | Private photo storage, reactions, replies and unsend. Run once |
 | `supabase/avatars-and-delete.sql` | Profile pictures and delete chat. Run once |
+| `supabase/chat-extras.sql` | Typing, edit, chat colours, and the CPR check-in. Run once |
+| `.github/workflows/cpr.yml` | CPR: keeps the free Supabase project awake |
 | `supabase/functions/send-push/` | The notification sender (Supabase Edge Function) |
 | `supabase/tests/`, `tests/` | Automated checks (see below) |
 
 ## Testing
 
-**Database rules** (123 checks: outsiders can't read or join chats or see their photos, nobody can send, react or unsend as someone else, a failing notification never blocks a message...). You need a local PostgreSQL (version 15+). Use a fresh database for each test file:
+**Database rules** (145 checks: outsiders can't read or join chats or see their photos, nobody can send, react or unsend as someone else, a failing notification never blocks a message...). You need a local PostgreSQL (version 15+). Use a fresh database for each test file:
 
 ```bash
 createdb boomtest
 psql -d boomtest -f supabase/tests/supabase_stub.sql   # imitates a fresh Supabase project
 psql -d boomtest -f supabase/tests/net_stub.sql        # stands in for pg_net
 psql -d boomtest -f supabase/tests/storage_stub.sql    # stands in for Supabase Storage
+psql -d boomtest -f supabase/tests/realtime_stub.sql   # stands in for Realtime's private channels
 psql -d boomtest -f supabase/schema.sql
 grep -v 'create extension if not exists pg_net' supabase/push.sql | psql -d boomtest
 psql -d boomtest -f supabase/features.sql
 psql -d boomtest -f supabase/avatars-and-delete.sql
-psql -d boomtest -f supabase/tests/security_tests.sql  # or push_tests / features_tests / avatars_delete_tests
+psql -d boomtest -f supabase/chat-extras.sql
+psql -d boomtest -f supabase/tests/security_tests.sql  # or push_tests / features_tests / avatars_delete_tests / extras_tests
 dropdb boomtest
 ```
 

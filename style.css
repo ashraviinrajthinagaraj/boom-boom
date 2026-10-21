@@ -724,6 +724,55 @@ input:focus-visible, textarea:focus-visible { border-color: var(--focus); }
 .act.danger { color: var(--danger); }
 .act.danger.armed { background: var(--danger); color: #FFFFFF; }
 
+/* ---------- Typing, search, colours, privacy ---------- */
+
+.chat-who p.typing { color: var(--mine); font-weight: 700; }
+
+.search-hit {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: 14px;
+  background: none;
+  text-align: left;
+}
+.search-hit:hover { background: var(--active); }
+.search-hit-main { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.search-hit-top { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+.search-hit-top time { flex-shrink: 0; font-size: 0.78rem; color: var(--ink-soft); }
+.search-hit-text {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-size: 0.92rem;
+  color: var(--ink-soft);
+}
+mark { background: var(--signal); color: var(--signal-ink); border-radius: 3px; padding: 0 1px; }
+
+.swatches { display: flex; flex-wrap: wrap; gap: 8px; }
+.swatch {
+  width: 36px;
+  height: 36px;
+  border: 0;
+  border-radius: 999px;
+}
+.swatch.chosen { box-shadow: 0 0 0 3px var(--surface), 0 0 0 6px var(--ink); }
+#chat-colour-section p, #chat-delete-section p { margin: 0; }
+#dlg-chat h3 { margin: 0; }
+
+.switch-row {
+  display: flex !important;
+  align-items: center;
+  gap: 10px;
+  font-weight: 700;
+}
+.switch-row input { width: 22px; height: 22px; accent-color: var(--mine); }
+#privacy-section .hint { margin: 0; }
+
 /* ---------- Photo viewer ---------- */
 
 dialog.viewer {

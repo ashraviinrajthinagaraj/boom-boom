@@ -1,0 +1,47 @@
+# CPR for Boom Boom
+#
+# Supabase pauses free projects after about a week without activity.
+# This gives Boom Boom a tiny check-in every 3 days so that never happens,
+# even during quiet weeks. It also keeps this schedule itself switched on
+# (GitHub turns off schedules in repos that go quiet for 60 days).
+#
+# Run it by hand any time: GitHub → Actions → CPR → Run workflow.
+
+name: CPR
+
+on:
+  schedule:
+    - cron: "23 3 */3 * *" # every 3 days, 11:23 Malaysia time
+  workflow_dispatch:
+
+permissions:
+  actions: write # only used to keep this schedule switched on
+
+jobs:
+  cpr:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Give Boom Boom CPR
+        env:
+          # Both are public values (they're in config.js too).
+          SUPABASE_URL: https://obzxdtgfsyidbnjwpmub.supabase.co
+          SUPABASE_KEY: sb_publishable___VUtfCyvxTyRhQqdfM9Cg_jMYFrNd3
+        run: |
+          for attempt in 1 2 3; do
+            code=$(curl -sS -o reply.txt -w "%{http_code}" -X POST "$SUPABASE_URL/rest/v1/rpc/cpr" \
+              -H "apikey: $SUPABASE_KEY" -H "Content-Type: application/json" -d '{}' || echo 000)
+            if [ "$code" = "200" ]; then echo "Supabase says: $(cat reply.txt)"; exit 0; fi
+            if [ "$code" = "404" ]; then
+              echo "::error::The cpr() function isn't there yet. Run supabase/chat-extras.sql in the Supabase SQL Editor."
+              exit 1
+            fi
+            echo "No answer yet (HTTP $code, attempt $attempt). Trying again in 30 seconds…"
+            sleep 30
+          done
+          echo "::error::Boom Boom's Supabase project didn't respond. It may be paused: open the Supabase dashboard and press Resume project."
+          exit 1
+
+      - name: Keep this schedule switched on
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X PUT "repos/${{ github.repository }}/actions/workflows/cpr.yml/enable"

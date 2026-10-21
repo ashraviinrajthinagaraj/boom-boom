@@ -85,6 +85,9 @@
     <aside class="sidebar" aria-label="Chats">
       <header class="bar">
         <p class="wordmark small"><span>Boom</span><span class="echo">Boom</span></p>
+        <button class="icon-btn" id="btn-search" type="button" aria-label="Search messages" title="Search messages">
+          <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M15.5 15.5L20 20" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+        </button>
         <button class="icon-btn" id="btn-new" type="button" aria-label="New chat" title="New chat">
           <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
         </button>
@@ -131,6 +134,15 @@
           <div id="message-list" class="message-list"></div>
         </div>
         <button id="btn-jump" class="jump" type="button" hidden>New messages</button>
+        <div id="edit-bar" class="reply-bar" hidden>
+          <div class="reply-bar-text">
+            <strong>Editing message</strong>
+            <span>Changes show for both of you, marked "edited".</span>
+          </div>
+          <button class="icon-btn" id="btn-edit-cancel" type="button" aria-label="Cancel editing">
+            <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+          </button>
+        </div>
         <div id="reply-bar" class="reply-bar" hidden>
           <div class="reply-bar-text">
             <strong id="reply-name"></strong>
@@ -183,6 +195,15 @@
         <p id="notify-status" class="muted"></p>
         <p id="notify-error" class="form-error" role="alert" hidden></p>
         <button id="btn-notify" class="btn primary" type="button" hidden>Turn on notifications</button>
+      </section>
+
+      <section class="form" id="privacy-section" aria-labelledby="privacy-title" hidden>
+        <h3 id="privacy-title">Privacy</h3>
+        <label class="switch-row">
+          <input type="checkbox" id="share-typing">
+          <span>Show when I'm typing</span>
+        </label>
+        <p class="hint">When this is off, nobody sees "typing…" from you.</p>
       </section>
 
       <section class="form" id="install-section" aria-labelledby="install-title">
@@ -243,10 +264,26 @@
     <div id="react-row" class="react-row" role="group" aria-label="Reactions"></div>
     <div class="msg-actions">
       <button id="act-reply" class="act" type="button">Reply</button>
+      <button id="act-edit" class="act" type="button">Edit</button>
       <button id="act-photo" class="act" type="button">View full photo</button>
       <button id="act-copy" class="act" type="button">Copy text</button>
       <button id="act-unsend" class="act danger" type="button">Unsend</button>
     </div>
+  </dialog>
+
+  <!-- Search -->
+  <dialog id="dlg-search" class="sheet" aria-labelledby="dlg-search-title">
+    <header class="sheet-head">
+      <h2 id="dlg-search-title">Search messages</h2>
+      <button class="icon-btn" type="button" data-close aria-label="Close">
+        <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+      </button>
+    </header>
+    <div class="sheet-search">
+      <input type="search" id="search-input" placeholder="Search your messages" aria-label="Search your messages" autocomplete="off">
+    </div>
+    <ul id="search-results" class="people-list"></ul>
+    <p id="search-empty" class="empty-small" hidden></p>
   </dialog>
 
   <!-- Chat options -->
@@ -258,10 +295,16 @@
       </button>
     </header>
     <div class="sheet-body">
-      <div class="form">
+      <section class="form" id="chat-colour-section" aria-labelledby="chat-colour-title" hidden>
+        <h3 id="chat-colour-title">Chat colour</h3>
+        <div id="swatches" class="swatches" role="group" aria-label="Chat colour"></div>
+        <p class="muted">You both see the same colour.</p>
+      </section>
+      <section class="form" id="chat-delete-section" hidden>
+        <h3>Delete chat</h3>
         <p id="chat-delete-note" class="muted"></p>
         <button id="act-delete-chat" class="btn danger-btn" type="button">Delete chat</button>
-      </div>
+      </section>
     </div>
   </dialog>
 

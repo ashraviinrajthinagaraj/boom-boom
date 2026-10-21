@@ -25,6 +25,12 @@ const isTouch = window.matchMedia('(pointer: coarse)').matches;
 const REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🔥'];
 const MSG_COLUMNS_V1 = 'id, conversation_id, sender_id, body, created_at';
 const MSG_COLUMNS_V2 = `${MSG_COLUMNS_V1}, reply_to, photo_path, photo_thumb_path, photo_width, photo_height, deleted_at`;
+const MSG_COLUMNS_V4 = `${MSG_COLUMNS_V2}, edited_at`;
+// Chat colours: bubbles, send button and accents (all pass contrast with white text).
+const THEMES = {
+  hibiscus: '#C8174B', ocean: '#1F5FCC', jungle: '#1D7A4C', sunset: '#C2410C',
+  grape: '#6D3FC0', indigo: '#3346B8', rose: '#B4236E', teal: '#0F766E',
+};
 const AVATAR_COLOURS = ['#3346B8', '#C8174B','#0F7B6C', '#9A4A00', '#6A3FB5', '#2F6E1F', '#B0306E', '#1F6F9F'];
 
 function h(tag, attrs = {}, ...kids) {
@@ -216,6 +222,8 @@ const state = {
   photoUrls: new Map(),  // "bucket:path" -> Promise<object URL>
   features: false,       // photos/reactions/replies/unsend set up on the server?
   avatars: false,        // profile pictures + delete chat set up on the server?
+  extras: false,         // typing, edit, chat colours set up on the server?
+  editing: null,         // message being edited
   channel: null,
   live: false,
   started: false,
@@ -239,23 +247,32 @@ function resetState() {
   state.photoUrls = new Map();
   state.features = false;
   state.avatars = false;
+  state.extras = false;
+  state.editing = null;
+  state.editDraft = '';
   state.live = false;
   state.started = false;
 }
 
-const msgColumns = () => (state.features ? MSG_COLUMNS_V2 : MSG_COLUMNS_V1);
+const msgColumns = () => (state.extras ? MSG_COLUMNS_V4 : state.features ? MSG_COLUMNS_V2 : MSG_COLUMNS_V1);
 
 // Which setup files have been run? (The app keeps working without them.)
 async function detectFeatures() {
-  const [v2, v3] = await Promise.all([
+  const [v2, v3, v4] = await Promise.all([
     supabase.from('messages').select('deleted_at').limit(1),
     supabase.from('profiles').select('avatar_path').limit(1),
+    supabase.from('messages').select('edited_at').limit(1),
   ]);
+  // Each setup file builds on the one before it.
   state.features = !v2.error;
-  state.avatars = !v3.error;
+  state.avatars = state.features && !v3.error;
+  state.extras = state.avatars && !v4.error;
   $('btn-attach').hidden = !state.features;
-  $('btn-chat-menu').hidden = !state.avatars;
+  $('btn-chat-menu').hidden = !state.avatars && !state.extras;
+  $('chat-delete-section').hidden = !state.avatars;
+  $('chat-colour-section').hidden = !state.extras;
   $('avatar-edit').hidden = !state.avatars;
+  $('privacy-section').hidden = !state.extras;
 }
 
 // ---------------------------------------------------------------------
@@ -276,6 +293,7 @@ function start() {
   wireUi();
   wireInstallAndNotifications();
   wireProfilePictureAndChatOptions();
+  wireExtras();
   registerServiceWorker();
   initAutoUpdate();
 }
@@ -359,7 +377,7 @@ function stopApp() {
 async function loadProfiles() {
   const { data, error } = await supabase
     .from('profiles')
-    .select(state.avatars ? 'id, username, display_name, avatar_path' : 'id, username, display_name')
+    .select(['id, username, display_name', state.avatars && 'avatar_path', state.extras && 'share_typing'].filter(Boolean).join(', '))
     .order('display_name');
   if (error) throw error;
   state.profiles = new Map(data.map((p) => [p.id, p]));
@@ -381,6 +399,13 @@ async function loadChats() {
   const local = state.chats.find((c) => c.local && c.conversation_id === state.activeId);
   if (local && !chats.some((c) => c.conversation_id === local.conversation_id)) chats.unshift(local);
   state.chats = chats;
+
+  if (state.extras) {
+    const { data: themes } = await supabase.from('conversations').select('id, theme');
+    const byId = new Map((themes || []).map((t) => [t.id, t.theme]));
+    for (const c of state.chats) c.theme = byId.get(c.conversation_id) || null;
+    applyTheme();
+  }
 
   if (state.chats.some((c) => c.other_user_id && !state.profiles.has(c.other_user_id))) {
     await loadProfiles().catch(() => {});
@@ -524,6 +549,9 @@ function subscribe() {
   if (state.avatars) {
     channel = channel.on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'profiles' }, (payload) => onProfileUpdate(payload.new));
   }
+  if (state.extras) {
+    channel = channel.on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'conversations' }, (payload) => onConversationUpdate(payload.new));
+  }
   state.channel = channel
     .subscribe((status) => {
       if (!state.started) return;
@@ -585,6 +613,7 @@ function onIncoming(m) {
   updateChatPreview(m, !mine && !viewing);
 
   if (m.conversation_id === state.activeId) {
+    if (!mine && typingUntil) { typingUntil = 0; renderChatHeader(); }
     const box = $('messages');
     const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 140;
     renderMessages(mine);
@@ -788,7 +817,9 @@ function renderChatHeader() {
   const other = state.profiles.get(chat.other_user_id);
   $('chat-avatar').replaceChildren(avatarEl(other ?? { id: chat.conversation_id, display_name: chatName(chat) }, 'sm'));
   $('chat-name').textContent = chatName(chat);
-  $('chat-username').textContent = other ? `@${other.username}` : '';
+  const typing = typingUntil > Date.now();
+  $('chat-username').textContent = typing ? 'typing…' : other ? `@${other.username}` : '';
+  $('chat-username').classList.toggle('typing', typing);
 }
 
 function renderMessages(stickToBottom = false) {
@@ -875,7 +906,7 @@ function messageEl(m, grouped, tail) {
     }
   }
 
-  let meta = clockTime(m.created_at);
+  let meta = clockTime(m.created_at) + (m.edited_at && !unsent ? ' (edited)' : '');
   if (m.pending) meta = m.upload || m.preparing ? 'Sending photo…' : 'Sending…';
   if (m.failed) meta = 'Not sent. Tap to retry.';
   bubble.append(h('span', { class: 'msg-meta' }, meta));
@@ -994,6 +1025,7 @@ const photoUrl = (path) => blobUrl('photos', path);
 
 async function openChat(convId) {
   if (state.activeId && state.activeId !== convId) {
+    cancelEdit();
     saveDraft();
     clearReply();
   }
@@ -1014,6 +1046,8 @@ async function openChat(convId) {
   if (history.state?.chat) history.replaceState({ chat: convId }, '');
   else history.pushState({ chat: convId }, '');
 
+  joinTyping(convId);
+  applyTheme();
   renderChatHeader();
   renderChatList();
 
@@ -1033,8 +1067,13 @@ async function openChat(convId) {
 }
 
 function closeChat({ quiet = false } = {}) {
-  if (state.activeId) saveDraft();
+  cancelEdit();
+  if (state.activeId) {
+    stopTyping();
+    saveDraft();
+  }
   clearReply();
+  leaveTyping();
   state.activeId = null;
   $('screen-app').classList.remove('show-chat');
   $('conversation-inner').hidden = true;
@@ -1081,6 +1120,8 @@ async function sendCurrent() {
   const input = $('composer-input');
   const body = input.value.trim();
   if (!convId || !body) return;
+  if (state.editing) return saveEdit(body);
+  stopTyping();
 
   input.value = '';
   autosize();
@@ -1258,6 +1299,7 @@ function openMessageMenu(m) {
   $('act-reply').hidden = !state.features;
   $('act-copy').hidden = !m.body;
   $('act-photo').hidden = !m.photo_path;
+  $('act-edit').hidden = !canEdit(m);
   $('act-unsend').hidden = !state.features || !mine;
   resetUnsend();
   $('msg-preview').textContent = `${personName(m.sender_id)}: ${snippet(m)}`;
@@ -1399,6 +1441,7 @@ function openSettings() {
   formMessage(pw, 'none');
   $('settings-email').textContent = `Signed in as ${state.user.email}`;
   renderAvatarSettings();
+  $('share-typing').checked = state.me?.share_typing !== false;
   renderInstall();
   renderNotifySettings();
   $('dlg-settings').showModal();
@@ -1482,6 +1525,7 @@ function openChatOptions() {
   const chat = activeChat();
   if (!chat) return;
   $('chat-delete-note').textContent = `Deletes this chat and its messages from your Boom Boom only. ${chatName(chat)} keeps their copy. To remove a message for everyone, unsend it instead.`;
+  renderSwatches();
   resetDeleteChat();
   $('dlg-chat').showModal();
 }
@@ -1606,6 +1650,7 @@ async function checkForUpdate(justReturned) {
 async function applyUpdate(latest) {
   // Refresh the browser's stored copies of the app files, then reload.
   await Promise.all(APP_FILES.map((file) => fetch(file, { cache: 'reload' }).catch(() => {})));
+  cancelEdit();
   try {
     if (latest) sessionStorage.setItem(UPDATE_KEY, latest);
     saveDraft();
@@ -2012,7 +2057,15 @@ function wireUi() {
   }, { passive: true });
 
   const input = $('composer-input');
-  input.addEventListener('input', autosize);
+  input.addEventListener('input', () => {
+    autosize();
+    if (input.value.trim()) noteTyping();
+    else stopTyping();
+  });
+  input.addEventListener('blur', stopTyping);
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && state.editing) { e.preventDefault(); cancelEdit(); }
+  });
   input.addEventListener('keydown', (e) => {
     // Enter sends on computers; on phones Enter makes a new line and the button sends.
     if (e.key === 'Enter' && !e.shiftKey && !isTouch && !e.isComposing) {
@@ -2153,6 +2206,285 @@ function wireUi() {
   });
   $('update-banner').addEventListener('click', () => applyUpdate(null));
   window.addEventListener('online', () => { if (state.started) resync(); });
+}
+
+// ---------------------------------------------------------------------
+//  "typing…" (private live channel per chat; only who's typing is sent)
+// ---------------------------------------------------------------------
+
+let typingChannel = null;
+let typingConv = null;
+let typingUntil = 0;
+let typingHide = null;
+let lastTypingSent = 0;
+
+function joinTyping(convId) {
+  if (typingConv === convId && typingChannel) return;
+  leaveTyping();
+  if (!state.extras) return;
+  typingConv = convId;
+  typingChannel = supabase
+    .channel(`typing:${convId}`, { config: { private: true, broadcast: { self: false } } })
+    .on('broadcast', { event: 'typing' }, ({ payload }) => onTyping(convId, payload))
+    .subscribe();
+}
+
+function leaveTyping() {
+  if (typingChannel) supabase.removeChannel(typingChannel);
+  typingChannel = null;
+  typingConv = null;
+  typingUntil = 0;
+  lastTypingSent = 0;
+  clearTimeout(typingHide);
+}
+
+function sendTypingSignal(typing) {
+  try {
+    Promise.resolve(typingChannel.send({ type: 'broadcast', event: 'typing', payload: { user_id: state.user.id, typing } })).catch(() => {});
+  } catch { /* not connected yet */ }
+}
+
+function noteTyping() {
+  if (!typingChannel || state.editing || state.me?.share_typing === false) return;
+  const now = Date.now();
+  if (now - lastTypingSent < 2500) return; // at most every 2.5 seconds
+  lastTypingSent = now;
+  sendTypingSignal(true);
+}
+
+function stopTyping() {
+  if (!typingChannel || !lastTypingSent) return;
+  lastTypingSent = 0;
+  sendTypingSignal(false);
+}
+
+function onTyping(convId, payload) {
+  if (!payload || payload.user_id === state.user?.id || convId !== state.activeId) return;
+  clearTimeout(typingHide);
+  typingUntil = payload.typing ? Date.now() + 6000 : 0;
+  renderChatHeader();
+  if (payload.typing) {
+    typingHide = setTimeout(() => { typingUntil = 0; renderChatHeader(); }, 6000);
+  }
+}
+
+// ---------------------------------------------------------------------
+//  Edit (your own text messages, within 15 minutes)
+// ---------------------------------------------------------------------
+
+const EDIT_WINDOW_MS = 15 * 60 * 1000;
+
+function canEdit(m) {
+  return state.extras && m.sender_id === state.user.id && !m.deleted_at && !m.photo_path
+    && typeof m.id === 'number' && Date.now() - time(m.created_at) < EDIT_WINDOW_MS;
+}
+
+function startEdit(m) {
+  clearReply();
+  const input = $('composer-input');
+  if (!state.editing) state.editDraft = input.value;
+  state.editing = m;
+  input.value = m.body;
+  autosize();
+  $('edit-bar').hidden = false;
+  input.focus();
+  input.setSelectionRange(input.value.length, input.value.length);
+}
+
+function cancelEdit() {
+  if (!state.editing) return;
+  state.editing = null;
+  $('edit-bar').hidden = true;
+  const input = $('composer-input');
+  input.value = state.editDraft || '';
+  state.editDraft = '';
+  autosize();
+}
+
+async function saveEdit(body) {
+  const m = state.editing;
+  if (body === (m.body || '').trim()) { cancelEdit(); return; }
+  const { error } = await supabase.rpc('edit_message', { p_message_id: m.id, p_body: body });
+  if (error) {
+    toast(/15 minutes/.test(error.message) ? 'Messages can only be edited for 15 minutes after sending.'
+      : isNetworkError(error) ? "Couldn't save the edit. Check your connection." : error.message);
+    return;
+  }
+  Object.assign(m, { body, edited_at: new Date().toISOString() });
+  cancelEdit();
+  renderMessages();
+  loadChats();
+}
+
+// ---------------------------------------------------------------------
+//  Search
+// ---------------------------------------------------------------------
+
+let searchTimer = null;
+let searchSeq = 0;
+
+function openSearch() {
+  $('search-input').value = '';
+  $('search-results').replaceChildren();
+  $('search-empty').hidden = true;
+  $('dlg-search').showModal();
+  if (!isTouch) $('search-input').focus();
+}
+
+async function runSearch(raw) {
+  const term = raw.trim();
+  const seq = ++searchSeq;
+  const results = $('search-results');
+  const empty = $('search-empty');
+  if (term.length < 2) {
+    results.replaceChildren();
+    empty.hidden = true;
+    return;
+  }
+  const pattern = `%${term.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+  let query = supabase.from('messages').select(msgColumns()).ilike('body', pattern).order('id', { ascending: false }).limit(60);
+  if (state.features) query = query.is('deleted_at', null);
+  const { data, error } = await query;
+  if (seq !== searchSeq) return; // a newer search is on its way
+  if (error) {
+    results.replaceChildren();
+    empty.textContent = "Search isn't available right now. Check your connection.";
+    empty.hidden = false;
+    return;
+  }
+  // Only chats in your list, and nothing from before you deleted a chat.
+  const hits = data.filter((m) => {
+    const chat = state.chats.find((c) => c.conversation_id === m.conversation_id);
+    return chat && time(m.created_at) > time(chat.cleared_at || 0);
+  }).slice(0, 30);
+  results.replaceChildren(...hits.map((m) => searchHit(m, term)));
+  empty.textContent = `No messages match "${term}".`;
+  empty.hidden = hits.length > 0;
+}
+
+function highlighted(text, term) {
+  const flat = text.replace(/\s+/g, ' ');
+  const lower = flat.toLowerCase();
+  const needle = term.toLowerCase();
+  const first = lower.indexOf(needle);
+  const start = first > 40 ? first - 30 : 0;
+  const out = [];
+  if (start > 0) out.push('…');
+  let i = start;
+  while (i < flat.length) {
+    const at = lower.indexOf(needle, i);
+    if (at === -1) { out.push(flat.slice(i)); break; }
+    if (at > i) out.push(flat.slice(i, at));
+    out.push(h('mark', {}, flat.slice(at, at + needle.length)));
+    i = at + needle.length;
+  }
+  return out;
+}
+
+function searchHit(m, term) {
+  const chat = state.chats.find((c) => c.conversation_id === m.conversation_id);
+  const other = state.profiles.get(chat?.other_user_id);
+  return h('li', {},
+    h('button', { type: 'button', class: 'search-hit', onclick: () => openSearchResult(m) },
+      avatarEl(other ?? { id: m.conversation_id, display_name: chatName(chat || {}) }, 'sm'),
+      h('span', { class: 'search-hit-main' },
+        h('span', { class: 'search-hit-top' },
+          h('strong', {}, chatName(chat || {})),
+          h('time', { datetime: m.created_at }, listTime(m.created_at))),
+        h('span', { class: 'search-hit-text' }, m.sender_id === state.user.id ? 'You: ' : '', ...highlighted(m.body || '', term)))));
+}
+
+async function openSearchResult(m) {
+  $('dlg-search').close();
+  await openChat(m.conversation_id);
+  if (state.activeId !== m.conversation_id) return;
+  for (let i = 0; i < 20; i++) { // load older pages until the message is on screen
+    const list = state.messages.get(m.conversation_id) || [];
+    if (list.some((x) => x.id === m.id) || !state.hasMore.get(m.conversation_id)) break;
+    await fetchOlder(m.conversation_id);
+  }
+  renderMessages();
+  jumpToMessage(m.id);
+}
+
+// ---------------------------------------------------------------------
+//  Chat colours (shared by both people in the chat)
+// ---------------------------------------------------------------------
+
+const THEME_LABELS = {
+  hibiscus: 'Hibiscus red', ocean: 'Ocean blue', jungle: 'Jungle green', sunset: 'Sunset orange',
+  grape: 'Grape purple', indigo: 'Indigo', rose: 'Rose pink', teal: 'Teal',
+};
+
+function applyTheme() {
+  const colour = THEMES[activeChat()?.theme];
+  const el = $('conversation-inner');
+  if (colour) el.style.setProperty('--mine', colour);
+  else el.style.removeProperty('--mine');
+}
+
+function renderSwatches() {
+  const current = activeChat()?.theme || 'hibiscus';
+  $('swatches').replaceChildren(...Object.entries(THEMES).map(([name, colour]) => h('button', {
+    type: 'button',
+    class: `swatch${name === current ? ' chosen' : ''}`,
+    style: `background:${colour}`,
+    'aria-label': THEME_LABELS[name],
+    'aria-pressed': name === current ? 'true' : 'false',
+    title: THEME_LABELS[name],
+    onclick: () => setTheme(name),
+  })));
+}
+
+async function setTheme(name) {
+  const chat = activeChat();
+  if (!chat) return;
+  const before = chat.theme;
+  chat.theme = name;
+  applyTheme();
+  renderSwatches();
+  const { error } = await supabase.rpc('set_chat_theme', { conv: chat.conversation_id, p_theme: name });
+  if (error) {
+    chat.theme = before;
+    applyTheme();
+    renderSwatches();
+    toast("Couldn't change the colour. Check your connection.");
+  }
+}
+
+function onConversationUpdate(c) {
+  const chat = state.chats.find((x) => x.conversation_id === c.id);
+  if (!chat || (chat.theme || null) === (c.theme || null)) return;
+  chat.theme = c.theme;
+  if (c.id === state.activeId) {
+    applyTheme();
+    if ($('dlg-chat').open) renderSwatches();
+  }
+}
+
+function wireExtras() {
+  $('btn-search').addEventListener('click', openSearch);
+  $('search-input').addEventListener('input', (e) => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => runSearch(e.target.value), 300);
+  });
+  $('act-edit').addEventListener('click', () => {
+    $('dlg-msg').close();
+    if (menuMessage) startEdit(menuMessage);
+  });
+  $('btn-edit-cancel').addEventListener('click', cancelEdit);
+  $('share-typing').addEventListener('change', async (e) => {
+    const on = e.target.checked;
+    if (!on) stopTyping();
+    const { error } = await supabase.from('profiles').update({ share_typing: on }).eq('id', state.user.id);
+    if (error) {
+      e.target.checked = !on;
+      toast("Couldn't save that setting. Check your connection.");
+      return;
+    }
+    state.me = { ...state.me, share_typing: on };
+    state.profiles.set(state.me.id, state.me);
+  });
 }
 
 // ---------------------------------------------------------------------
