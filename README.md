@@ -9,6 +9,8 @@ Created by Ashraviinraj Thinagaraj.
 - One-to-one chats that arrive live, like any social media DM
 - Photos at full original quality, with your location and camera details removed first
 - Reactions (👍 ❤️ 😂 😮 😢 🔥), replies that quote the original, and unsend for everyone
+- Profile pictures, and "delete chat" (for you; your friend keeps their copy)
+- Updates itself: when a new version is on GitHub, the app refreshes the next time you come back to it
 - Unread badges, a count in the browser tab, and a little "boom" ripple when a message lands in another chat
 - Notifications when someone messages you, even with Boom Boom closed. Tap one to jump straight into that chat
 - Installs on your home screen like a real app, with an unread count on the icon where the phone supports it
@@ -87,6 +89,17 @@ If you already deployed `send-push`, update it too so photo notifications say "�
 
 **Using them:** tap the picture icon to send photos. **Press and hold** a message (right-click or the **⋯** button on a computer) to react, reply, copy or unsend.
 
+## Profile pictures and delete chat (one-time server setup)
+
+**SQL Editor → New query**: paste [`supabase/avatars-and-delete.sql`](supabase/avatars-and-delete.sql) and **Run**, once (after `features.sql`). Until then, these two options stay hidden.
+
+- **Profile picture:** **Settings → Your profile → Add a photo.** It's cropped to a centred square and re-saved on your phone, which also removes any hidden location or camera details. Only signed-in Boom Boom members can see it.
+- **Delete chat:** open a chat and tap **⋮ → Delete chat** (tap twice). It disappears from *your* Boom Boom only. If they message you again, the chat comes back with just the new messages.
+
+## Updates
+
+Boom Boom checks for a new version whenever you come back to it, and every 15 minutes while it's open. If you're not in the middle of something, it reloads itself straight away (and reopens the chat you were in). If you're typing, a yellow **Boom Boom has been updated. Tap to refresh.** button appears instead, and your half-written message is kept.
+
 ## Notifications (one-time server setup)
 
 Notifications need one extra piece on Supabase: a small function, `send-push`, that the database calls whenever someone sends a message.
@@ -158,12 +171,13 @@ where email = 'friend@example.com';
 | `supabase/schema.sql` | Tables, security rules and helper functions. Run once in Supabase |
 | `supabase/push.sql` | Notification devices and the trigger that calls send-push. Run once |
 | `supabase/features.sql` | Private photo storage, reactions, replies and unsend. Run once |
+| `supabase/avatars-and-delete.sql` | Profile pictures and delete chat. Run once |
 | `supabase/functions/send-push/` | The notification sender (Supabase Edge Function) |
 | `supabase/tests/`, `tests/` | Automated checks (see below) |
 
 ## Testing
 
-**Database rules** (103 checks: outsiders can't read or join chats or see their photos, nobody can send, react or unsend as someone else, a failing notification never blocks a message...). You need a local PostgreSQL (version 15+). Use a fresh database for each test file:
+**Database rules** (123 checks: outsiders can't read or join chats or see their photos, nobody can send, react or unsend as someone else, a failing notification never blocks a message...). You need a local PostgreSQL (version 15+). Use a fresh database for each test file:
 
 ```bash
 createdb boomtest
@@ -173,7 +187,8 @@ psql -d boomtest -f supabase/tests/storage_stub.sql    # stands in for Supabase 
 psql -d boomtest -f supabase/schema.sql
 grep -v 'create extension if not exists pg_net' supabase/push.sql | psql -d boomtest
 psql -d boomtest -f supabase/features.sql
-psql -d boomtest -f supabase/tests/security_tests.sql  # or push_tests.sql / features_tests.sql
+psql -d boomtest -f supabase/avatars-and-delete.sql
+psql -d boomtest -f supabase/tests/security_tests.sql  # or push_tests / features_tests / avatars_delete_tests
 dropdb boomtest
 ```
 

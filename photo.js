@@ -352,6 +352,36 @@ export async function convertToJpeg(blob) {
   }
 }
 
+// Profile picture: a centred square, 512×512, re-saved as JPEG (which also
+// drops every hidden detail the original carried).
+export async function makeAvatar(file, size = 512) {
+  let width = 0;
+  let height = 0;
+  try {
+    const info = cleanPhoto(new Uint8Array(await file.arrayBuffer()));
+    width = info.width;
+    height = info.height;
+  } catch { /* other formats: decode at full size below */ }
+  let bitmap;
+  try {
+    const scale = width && height ? Math.min(1, size / Math.min(width, height)) : 1;
+    bitmap = await decode(file, width && scale < 1 ? Math.round(width * scale) : 0);
+  } catch {
+    throw new PhotoError('unsupported', "That picture's format can't be used. Try a JPEG or PNG.");
+  }
+  const side = Math.min(bitmap.width, bitmap.height);
+  const out = Math.max(1, Math.min(size, side));
+  const canvas = typeof OffscreenCanvas !== 'undefined' ? new OffscreenCanvas(out, out) : Object.assign(document.createElement('canvas'), { width: out, height: out });
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#FFFFFF';
+  ctx.fillRect(0, 0, out, out);
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(bitmap, (bitmap.width - side) / 2, (bitmap.height - side) / 2, side, side, 0, 0, out, out);
+  bitmap.close?.();
+  if (canvas.convertToBlob) return canvas.convertToBlob({ type: 'image/jpeg', quality: 0.88 });
+  return new Promise((resolve, reject) => canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('encode failed'))), 'image/jpeg', 0.88));
+}
+
 // Everything needed to send one photo.
 export async function preparePhoto(file) {
   const raw = new Uint8Array(await file.arrayBuffer());

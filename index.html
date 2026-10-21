@@ -122,6 +122,9 @@
             <h2 id="chat-name"></h2>
             <p id="chat-username"></p>
           </div>
+          <button class="icon-btn" id="btn-chat-menu" type="button" aria-label="Chat options" title="Chat options" hidden>
+            <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><circle cx="12" cy="5" r="2" fill="currentColor"/><circle cx="12" cy="12" r="2" fill="currentColor"/><circle cx="12" cy="19" r="2" fill="currentColor"/></svg>
+          </button>
         </header>
         <div id="messages" class="messages">
           <button id="btn-older" class="btn ghost small" type="button" hidden>Show earlier messages</button>
@@ -190,6 +193,15 @@
 
       <form id="settings-profile-form" class="form" novalidate>
         <h3>Your profile</h3>
+        <div class="avatar-edit" id="avatar-edit" hidden>
+          <div id="avatar-preview"></div>
+          <div class="avatar-edit-actions">
+            <button type="button" class="btn ghost small" id="btn-avatar-change">Add a photo</button>
+            <button type="button" class="link-btn" id="btn-avatar-remove" hidden>Remove photo</button>
+            <p id="avatar-status" class="muted" role="status" hidden></p>
+          </div>
+          <input type="file" id="avatar-input" accept="image/*" hidden>
+        </div>
         <label>Display name
           <input name="display_name" maxlength="40" required>
         </label>
@@ -237,6 +249,22 @@
     </div>
   </dialog>
 
+  <!-- Chat options -->
+  <dialog id="dlg-chat" class="sheet" aria-labelledby="dlg-chat-title">
+    <header class="sheet-head">
+      <h2 id="dlg-chat-title">Chat options</h2>
+      <button class="icon-btn" type="button" data-close aria-label="Close">
+        <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+      </button>
+    </header>
+    <div class="sheet-body">
+      <div class="form">
+        <p id="chat-delete-note" class="muted"></p>
+        <button id="act-delete-chat" class="btn danger-btn" type="button">Delete chat</button>
+      </div>
+    </div>
+  </dialog>
+
   <!-- Full-size photo -->
   <dialog id="dlg-photo" class="viewer" aria-label="Photo">
     <div class="viewer-bar">
@@ -248,6 +276,8 @@
     <img id="viewer-img" alt="Photo">
     <p id="viewer-status" class="viewer-status" hidden></p>
   </dialog>
+
+  <button id="update-banner" class="update-banner" type="button" hidden>Boom Boom has been updated. Tap to refresh.</button>
 
   <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
   <p id="sr-live" class="sr-only" aria-live="polite"></p>

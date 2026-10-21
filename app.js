@@ -5,7 +5,7 @@
 
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
 import * as config from './config.js';
-import { preparePhoto } from './photo.js';
+import { preparePhoto, makeAvatar } from './photo.js';
 
 const { SUPABASE_URL, SUPABASE_KEY } = config;
 const VAPID_KEY = (config.VAPID_PUBLIC_KEY || '').trim();
@@ -59,7 +59,14 @@ function initials(name) {
 function avatarEl(person, size = '') {
   const name = person?.display_name || '?';
   const colour = AVATAR_COLOURS[hashString(person?.id || name) % AVATAR_COLOURS.length];
-  return h('span', { class: `avatar ${size}`.trim(), style: `background:${colour}`, 'aria-hidden': 'true' }, initials(name));
+  const el = h('span', { class: `avatar ${size}`.trim(), style: `background:${colour}`, 'aria-hidden': 'true' }, initials(name));
+  if (state.avatars && person?.avatar_path) {
+    // Initials show until the picture arrives (or if it can't load).
+    const img = h('img', { alt: '', decoding: 'async' });
+    blobUrl('avatars', person.avatar_path).then((url) => { img.src = url; }, () => img.remove());
+    el.append(img);
+  }
+  return el;
 }
 
 const time = (ts) => new Date(ts).getTime();
@@ -206,8 +213,9 @@ const state = {
   reactions: new Map(),  // message id -> Map(user id -> emoji)
   quoted: new Map(),     // message id -> message (originals of replies not on screen)
   replyTo: null,         // message being replied to in the open chat
-  photoUrls: new Map(),  // storage path -> Promise<object URL>
+  photoUrls: new Map(),  // "bucket:path" -> Promise<object URL>
   features: false,       // photos/reactions/replies/unsend set up on the server?
+  avatars: false,        // profile pictures + delete chat set up on the server?
   channel: null,
   live: false,
   started: false,
@@ -230,17 +238,24 @@ function resetState() {
   state.replyTo = null;
   state.photoUrls = new Map();
   state.features = false;
+  state.avatars = false;
   state.live = false;
   state.started = false;
 }
 
 const msgColumns = () => (state.features ? MSG_COLUMNS_V2 : MSG_COLUMNS_V1);
 
-// Has features.sql been run? (The app keeps working without it.)
+// Which setup files have been run? (The app keeps working without them.)
 async function detectFeatures() {
-  const { error } = await supabase.from('messages').select('deleted_at').limit(1);
-  state.features = !error;
+  const [v2, v3] = await Promise.all([
+    supabase.from('messages').select('deleted_at').limit(1),
+    supabase.from('profiles').select('avatar_path').limit(1),
+  ]);
+  state.features = !v2.error;
+  state.avatars = !v3.error;
   $('btn-attach').hidden = !state.features;
+  $('btn-chat-menu').hidden = !state.avatars;
+  $('avatar-edit').hidden = !state.avatars;
 }
 
 // ---------------------------------------------------------------------
@@ -260,7 +275,9 @@ function start() {
 
   wireUi();
   wireInstallAndNotifications();
+  wireProfilePictureAndChatOptions();
   registerServiceWorker();
+  initAutoUpdate();
 }
 
 async function handleSession(session) {
@@ -277,6 +294,7 @@ async function handleSession(session) {
   state.user = user;
 
   try {
+    await detectFeatures();
     await loadProfiles();
   } catch (error) {
     currentUserId = null;
@@ -306,7 +324,7 @@ async function startApp() {
   state.started = true;
   showScreen('screen-app');
   closeChat({ quiet: true });
-  await detectFeatures();
+  restoreDraftsAfterUpdate();
   await loadChats();
   subscribe();
   renderNudge();
@@ -341,7 +359,7 @@ function stopApp() {
 async function loadProfiles() {
   const { data, error } = await supabase
     .from('profiles')
-    .select('id, username, display_name')
+    .select(state.avatars ? 'id, username, display_name, avatar_path' : 'id, username, display_name')
     .order('display_name');
   if (error) throw error;
   state.profiles = new Map(data.map((p) => [p.id, p]));
@@ -382,6 +400,7 @@ async function fetchLatest(convId) {
     .from('messages')
     .select(msgColumns())
     .eq('conversation_id', convId)
+    .gt('created_at', clearedAt(convId))
     .order('id', { ascending: false })
     .limit(PAGE_SIZE);
   if (error) {
@@ -406,6 +425,7 @@ async function fetchOlder(convId) {
     .from('messages')
     .select(msgColumns())
     .eq('conversation_id', convId)
+    .gt('created_at', clearedAt(convId))
     .lt('id', oldest.id)
     .order('id', { ascending: false })
     .limit(PAGE_SIZE);
@@ -437,7 +457,15 @@ async function loadQuoted(convId, msgs) {
   const missing = [...new Set(msgs.map((m) => m.reply_to).filter((id) => id && !have.has(id) && !state.quoted.has(id)))];
   if (!missing.length) return;
   const { data } = await supabase.from('messages').select(MSG_COLUMNS_V2).in('id', missing);
-  for (const m of data || []) state.quoted.set(m.id, m);
+  const since = time(clearedAt(convId));
+  for (const m of data || []) {
+    if (time(m.created_at) > since) state.quoted.set(m.id, m); // deleted-chat history stays hidden
+  }
+}
+
+// Messages from before you deleted a chat stay hidden.
+function clearedAt(convId) {
+  return state.chats.find((c) => c.conversation_id === convId)?.cleared_at || '1970-01-01T00:00:00Z';
 }
 
 function setReaction(messageId, userId, emoji) {
@@ -458,6 +486,7 @@ async function fetchNewer(convId) {
     .from('messages')
     .select(msgColumns())
     .eq('conversation_id', convId)
+    .gt('created_at', clearedAt(convId))
     .gt('id', newestId)
     .order('id', { ascending: true })
     .limit(200);
@@ -491,6 +520,9 @@ function subscribe() {
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'messages' }, (payload) => onMessageUpdate(payload.new))
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'message_reactions' }, (payload) => onReaction(payload.new))
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'message_reactions' }, (payload) => onReaction(payload.new));
+  }
+  if (state.avatars) {
+    channel = channel.on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'profiles' }, (payload) => onProfileUpdate(payload.new));
   }
   state.channel = channel
     .subscribe((status) => {
@@ -578,6 +610,16 @@ function onMessageUpdate(m) {
   if (m.deleted_at) state.reactions.delete(m.id);
   if (m.conversation_id === state.activeId) renderMessages();
   loadChats(); // the chat list preview may have changed
+}
+
+// A friend changed their name or picture.
+function onProfileUpdate(p) {
+  if (!state.started || !p?.id) return;
+  const merged = { ...(state.profiles.get(p.id) || {}), ...p };
+  state.profiles.set(p.id, merged);
+  if (p.id === state.user.id) state.me = merged;
+  renderChatList();
+  renderChatHeader();
 }
 
 function onReaction(r) {
@@ -930,18 +972,21 @@ function jumpToMessage(id) {
   el.classList.add('flash');
 }
 
-// Photos are private: they're downloaded with your login, never via a public link.
-function photoUrl(path) {
-  if (!state.photoUrls.has(path)) {
-    const p = supabase.storage.from('photos').download(path).then(({ data, error }) => {
+// Photos and profile pictures are private: they're downloaded with your
+// login, never through a public link.
+function blobUrl(bucket, path) {
+  const key = `${bucket}:${path}`;
+  if (!state.photoUrls.has(key)) {
+    const p = supabase.storage.from(bucket).download(path).then(({ data, error }) => {
       if (error || !data) throw error || new Error('download failed');
       return URL.createObjectURL(data);
     });
-    p.catch(() => state.photoUrls.delete(path)); // allow a retry later
-    state.photoUrls.set(path, p);
+    p.catch(() => state.photoUrls.delete(key)); // allow a retry later
+    state.photoUrls.set(key, p);
   }
-  return state.photoUrls.get(path);
+  return state.photoUrls.get(key);
 }
+const photoUrl = (path) => blobUrl('photos', path);
 
 // ---------------------------------------------------------------------
 //  Opening and closing chats
@@ -1151,7 +1196,7 @@ async function deliverPhoto(temp) {
   }
   if (!error) {
     // Reuse the preview we already have instead of downloading it again.
-    state.photoUrls.set(thumbPath, Promise.resolve(temp.photo_local));
+    state.photoUrls.set(`photos:${thumbPath}`, Promise.resolve(temp.photo_local));
   }
   settle(temp, data, error);
   if (error) toast(error?.statusCode === '413' || /exceeded|too large|size/i.test(error?.message || '')
@@ -1324,10 +1369,16 @@ async function startChatWith(userId) {
   if (!state.chats.some((c) => c.conversation_id === convId)) await loadChats();
   if (!state.chats.some((c) => c.conversation_id === convId)) {
     // An empty chat the other person opened first: show it locally until someone writes.
+    let cleared = null;
+    if (state.avatars) {
+      const { data: mine } = await supabase.from('conversation_members').select('cleared_at')
+        .eq('conversation_id', convId).eq('user_id', state.user.id).maybeSingle();
+      cleared = mine?.cleared_at || null;
+    }
     state.chats.unshift({
       conversation_id: convId, is_group: false, title: null, other_user_id: userId,
       last_message_at: null, last_message_body: null, last_message_sender: null,
-      unread_count: 0, local: true,
+      unread_count: 0, cleared_at: cleared, local: true,
     });
   }
   openChat(convId);
@@ -1347,9 +1398,232 @@ function openSettings() {
   pw.username.value = state.user.email || '';
   formMessage(pw, 'none');
   $('settings-email').textContent = `Signed in as ${state.user.email}`;
+  renderAvatarSettings();
   renderInstall();
   renderNotifySettings();
   $('dlg-settings').showModal();
+}
+
+// ---------------------------------------------------------------------
+//  Profile picture
+// ---------------------------------------------------------------------
+
+function renderAvatarSettings() {
+  $('avatar-preview').replaceChildren(avatarEl(state.me, 'lg'));
+  $('btn-avatar-change').textContent = state.me?.avatar_path ? 'Change photo' : 'Add a photo';
+  $('btn-avatar-remove').hidden = !state.me?.avatar_path;
+  $('avatar-status').hidden = true;
+}
+
+function avatarStatus(text, isError = false) {
+  const el = $('avatar-status');
+  el.textContent = text;
+  el.className = isError ? 'form-error' : 'muted';
+  el.hidden = !text;
+}
+
+async function saveAvatarPath(path) {
+  const { data, error } = await supabase.from('profiles')
+    .update({ avatar_path: path }).eq('id', state.user.id)
+    .select('id, username, display_name, avatar_path').single();
+  if (error) throw error;
+  state.me = { ...state.me, ...data };
+  state.profiles.set(state.me.id, state.me);
+}
+
+async function setAvatar(file) {
+  const button = $('btn-avatar-change');
+  setBusy(button, true);
+  avatarStatus('Saving your photo…');
+  const bucket = supabase.storage.from('avatars');
+  const oldPath = state.me.avatar_path;
+  const path = `${state.user.id}/${crypto.randomUUID()}.jpg`;
+  let uploaded = false;
+  try {
+    const blob = await makeAvatar(file); // square, small, hidden details removed
+    const up = await bucket.upload(path, blob, { contentType: 'image/jpeg', upsert: false, cacheControl: '31536000' });
+    if (up.error) throw up.error;
+    uploaded = true;
+    state.photoUrls.set(`avatars:${path}`, Promise.resolve(URL.createObjectURL(blob)));
+    await saveAvatarPath(path);
+    if (oldPath) bucket.remove([oldPath]).catch(() => {});
+    avatarStatus('');
+  } catch (error) {
+    if (uploaded) bucket.remove([path]).catch(() => {});
+    avatarStatus(error?.code === 'unsupported' ? error.message : "Couldn't save your photo. Check your connection and try again.", true);
+  } finally {
+    setBusy(button, false);
+  }
+  renderAvatarSettings();
+  renderChatList();
+}
+
+async function removeAvatar() {
+  const oldPath = state.me.avatar_path;
+  if (!oldPath) return;
+  try {
+    await saveAvatarPath(null);
+    supabase.storage.from('avatars').remove([oldPath]).catch(() => {});
+  } catch {
+    avatarStatus("Couldn't remove your photo. Check your connection.", true);
+    return;
+  }
+  renderAvatarSettings();
+  renderChatList();
+}
+
+// ---------------------------------------------------------------------
+//  Delete chat (for you only)
+// ---------------------------------------------------------------------
+
+let deleteArmed = null;
+
+function openChatOptions() {
+  const chat = activeChat();
+  if (!chat) return;
+  $('chat-delete-note').textContent = `Deletes this chat and its messages from your Boom Boom only. ${chatName(chat)} keeps their copy. To remove a message for everyone, unsend it instead.`;
+  resetDeleteChat();
+  $('dlg-chat').showModal();
+}
+
+function resetDeleteChat() {
+  clearTimeout(deleteArmed);
+  deleteArmed = null;
+  const b = $('act-delete-chat');
+  b.textContent = 'Delete chat';
+  b.classList.remove('armed');
+}
+
+async function deleteChat() {
+  const convId = state.activeId;
+  if (!convId) return;
+  const { error } = await supabase.rpc('delete_chat', { conv: convId });
+  if (error) {
+    toast(isNetworkError(error) ? "Couldn't delete the chat. Check your connection." : error.message);
+    return;
+  }
+  $('dlg-chat').close();
+  state.chats = state.chats.filter((c) => c.conversation_id !== convId);
+  state.messages.delete(convId);
+  state.drafts.delete(convId);
+  $('composer-input').value = '';
+  if (history.state?.chat) history.back();
+  else closeChat();
+  renderChatList();
+  updateTitle();
+  toast('Chat deleted.');
+}
+
+function wireProfilePictureAndChatOptions() {
+  $('btn-avatar-change').addEventListener('click', () => $('avatar-input').click());
+  $('avatar-input').addEventListener('change', (e) => {
+    const file = e.target.files[0];
+    e.target.value = '';
+    if (file) setAvatar(file);
+  });
+  $('btn-avatar-remove').addEventListener('click', removeAvatar);
+
+  $('btn-chat-menu').addEventListener('click', openChatOptions);
+  $('act-delete-chat').addEventListener('click', () => {
+    const button = $('act-delete-chat');
+    if (!deleteArmed) {
+      button.textContent = 'Tap again to delete this chat';
+      button.classList.add('armed');
+      deleteArmed = setTimeout(resetDeleteChat, 4000);
+      return;
+    }
+    resetDeleteChat();
+    deleteChat();
+  });
+  $('dlg-chat').addEventListener('close', resetDeleteChat);
+}
+
+// ---------------------------------------------------------------------
+//  Auto-update
+//  When a new version is on GitHub, Boom Boom refreshes itself the next
+//  time you come back to it (or offers a button if you're mid-message).
+// ---------------------------------------------------------------------
+
+const APP_FILES = ['./', './app.js', './photo.js', './config.js', './style.css', './sw.js', './manifest.webmanifest'];
+const UPDATE_KEY = 'boom-updated-to';
+const DRAFTS_KEY = 'boom-drafts';
+let runningVersion = null;
+let checkingUpdate = false;
+
+async function appFingerprint(cacheMode) {
+  const parts = await Promise.all(APP_FILES.map(async (file) => {
+    const res = await fetch(file, { cache: cacheMode });
+    if (!res.ok) throw new Error(`${file}: HTTP ${res.status}`);
+    return new Uint8Array(await res.arrayBuffer());
+  }));
+  const all = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+  let offset = 0;
+  for (const p of parts) { all.set(p, offset); offset += p.length; }
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', all));
+  return Array.from(digest, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function initAutoUpdate() {
+  try {
+    runningVersion = await appFingerprint('force-cache'); // what's running now
+  } catch {
+    return; // offline or unusual setup: just don't auto-update
+  }
+  setInterval(() => {
+    if (document.visibilityState === 'visible') checkForUpdate(false);
+  }, 15 * 60 * 1000);
+}
+
+function safeToReload() {
+  if (document.querySelector('dialog[open]')) return false;
+  if ($('composer-input').value.trim()) return false;
+  for (const list of state.messages.values()) {
+    if (list.some((m) => m.pending)) return false;
+  }
+  return true;
+}
+
+async function checkForUpdate(justReturned) {
+  if (!runningVersion || checkingUpdate) return;
+  checkingUpdate = true;
+  try {
+    const latest = await appFingerprint('no-cache'); // asks GitHub if anything changed
+    if (latest === runningVersion) return;
+    let alreadyTried = false;
+    try { alreadyTried = sessionStorage.getItem(UPDATE_KEY) === latest; } catch { /* private mode */ }
+    if (justReturned && safeToReload() && !alreadyTried) {
+      await applyUpdate(latest);
+    } else {
+      $('update-banner').hidden = false;
+    }
+  } catch {
+    /* offline: try again later */
+  } finally {
+    checkingUpdate = false;
+  }
+}
+
+async function applyUpdate(latest) {
+  // Refresh the browser's stored copies of the app files, then reload.
+  await Promise.all(APP_FILES.map((file) => fetch(file, { cache: 'reload' }).catch(() => {})));
+  try {
+    if (latest) sessionStorage.setItem(UPDATE_KEY, latest);
+    saveDraft();
+    sessionStorage.setItem(DRAFTS_KEY, JSON.stringify([...state.drafts]));
+  } catch { /* private mode: drafts can't be kept */ }
+  const url = new URL(location.href);
+  url.search = '';
+  if (state.activeId) url.searchParams.set('chat', state.activeId); // come back to the same chat
+  location.replace(url.href);
+}
+
+function restoreDraftsAfterUpdate() {
+  try {
+    const saved = sessionStorage.getItem(DRAFTS_KEY);
+    if (!saved) return;
+    sessionStorage.removeItem(DRAFTS_KEY);
+    for (const [convId, text] of JSON.parse(saved)) state.drafts.set(convId, text);
+  } catch { /* nothing to restore */ }
 }
 
 // ---------------------------------------------------------------------
@@ -1778,8 +2052,8 @@ function wireUi() {
       formMessage(settingsForm, 'error', profileErrorText(error));
       return;
     }
-    state.profiles.set(data.id, data);
-    state.me = data;
+    state.me = { ...state.me, ...data };
+    state.profiles.set(data.id, state.me);
     formMessage(settingsForm, 'ok', 'Profile saved.');
     renderChatList();
   });
@@ -1870,10 +2144,14 @@ function wireUi() {
     });
   }
 
-  // Coming back to the tab: catch up and clear what you've now seen.
+  // Coming back to the tab: catch up, clear what you've now seen, and pick
+  // up a new version of Boom Boom if there is one.
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible' && state.started) resync();
+    if (document.visibilityState !== 'visible') return;
+    if (state.started) resync();
+    checkForUpdate(true);
   });
+  $('update-banner').addEventListener('click', () => applyUpdate(null));
   window.addEventListener('online', () => { if (state.started) resync(); });
 }
 
