@@ -135,8 +135,9 @@ code {
 }
 .hint { font-weight: 400; color: var(--ink-soft); font-size: 0.85rem; }
 
-input[type="email"], input[type="password"], input[type="text"], input[type="search"], input:not([type]) {
+input[type="email"], input[type="password"], input[type="text"], input[type="search"], input[type="datetime-local"], input:not([type]) {
   width: 100%;
+  min-height: 48px;
   font-size: 16px; /* stops iPhones zooming in */
   padding: 12px 14px;
   border: 1.5px solid var(--line);
@@ -425,6 +426,7 @@ input:focus-visible, textarea:focus-visible { border-color: var(--focus); }
 
 .messages {
   flex: 1;
+  overflow-x: hidden; /* room for swipe-to-reply */
   overflow-y: auto;
   overscroll-behavior: contain;
   padding: 12px clamp(12px, 3vw, 32px) 10px;
@@ -461,6 +463,8 @@ input:focus-visible, textarea:focus-visible { border-color: var(--focus); }
   margin-top: 10px;
 }
 .msg-wrap.grouped { margin-top: 3px; }
+.msg-wrap { transition: transform 0.2s ease-out; }
+.msg-wrap.swiping { transition: none; }
 .msg-wrap.mine { align-self: flex-end; align-items: flex-end; }
 .msg-wrap.theirs { align-self: flex-start; align-items: flex-start; }
 
@@ -482,6 +486,7 @@ input:focus-visible, textarea:focus-visible { border-color: var(--focus); }
   background: var(--theirs);
   border: 1px solid var(--theirs-line);
 }
+.msg { touch-action: pan-y; } /* sideways drags are ours (swipe to reply) */
 .msg.mine.tail { border-bottom-right-radius: 6px; }
 .msg.theirs.tail { border-bottom-left-radius: 6px; }
 
@@ -513,6 +518,54 @@ input:focus-visible, textarea:focus-visible { border-color: var(--focus); }
 @media (pointer: coarse) {
   .msg { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
 }
+
+/* Swipe right to reply: the arrow fades in beside the bubble */
+.msg-wrap.swiping::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: -38px;
+  width: 30px;
+  height: 30px;
+  margin-top: -15px;
+  border-radius: 999px;
+  background: var(--active) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M10 7L5 12l5 5M5 12h9a5 5 0 0 1 5 5' fill='none' stroke='%23565A79' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / 18px no-repeat;
+  opacity: 0.45;
+  transition: opacity 0.12s, transform 0.12s;
+}
+.msg-wrap.swipe-ready::before { opacity: 1; transform: scale(1.12); }
+
+/* Double-tap heart */
+.heart-burst {
+  position: fixed;
+  z-index: 40;
+  font-size: 2.6rem;
+  line-height: 1;
+  pointer-events: none;
+  transform: translate(-50%, -50%) scale(0);
+  animation: heart-burst 0.8s ease-out forwards;
+}
+@keyframes heart-burst {
+  0% { transform: translate(-50%, -50%) scale(0); opacity: 1; }
+  30% { transform: translate(-50%, -50%) scale(1.25); opacity: 1; }
+  55% { transform: translate(-50%, -50%) scale(0.95); opacity: 1; }
+  100% { transform: translate(-50%, -80%) scale(1); opacity: 0; }
+}
+
+/* Scheduled (send later) messages, waiting at the bottom of the chat */
+.msg.scheduled {
+  background: var(--surface);
+  background: color-mix(in srgb, var(--mine) 10%, var(--surface));
+  color: var(--ink);
+  border: 1.5px dashed var(--mine);
+  cursor: pointer;
+}
+.msg.scheduled .msg-quote {
+  border-left-color: var(--mine);
+  background: var(--active);
+  color: var(--ink);
+}
+.msg.scheduled .msg-meta { opacity: 1; color: var(--ink-soft); font-weight: 700; }
 
 /* Highlight when jumping to a quoted message */
 .msg.flash { animation: flash 1.2s ease-out; }
@@ -666,6 +719,7 @@ input:focus-visible, textarea:focus-visible { border-color: var(--focus); }
   color: var(--mine-ink);
 }
 .send:disabled { opacity: 0.4; }
+.send { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
 
 /* ---------- Reply bar and photo button ---------- */
 
@@ -772,6 +826,78 @@ mark { background: var(--signal); color: var(--signal-ink); border-radius: 3px; 
 }
 .switch-row input { width: 22px; height: 22px; accent-color: var(--mine); }
 #privacy-section .hint { margin: 0; }
+
+/* ---------- Send later ---------- */
+
+.later-body { gap: 18px; padding-bottom: 20px; }
+.later-preview {
+  justify-self: end;
+  max-width: 85%;
+  margin: 0;
+  padding: 8px 12px;
+  border-radius: 18px 18px 6px 18px;
+  background: var(--mine);
+  color: var(--mine-ink);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.later-picks { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.later-pick {
+  display: grid;
+  gap: 2px;
+  padding: 12px 10px;
+  border: 1.5px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface);
+  text-align: left;
+}
+.later-pick:hover { background: var(--active); }
+.later-pick span { font-size: 0.8rem; color: var(--ink-soft); }
+.later-note { margin: 0; font-size: 0.85rem; }
+#later-form .btn { justify-self: start; }
+@media (max-width: 380px) { .later-picks { grid-template-columns: 1fr; } }
+
+/* ---------- Nicknames, tips ---------- */
+
+#chat-nickname-section .btn { justify-self: start; }
+#nickname-status { margin: 0; }
+.tips { margin: 0; padding-left: 20px; display: grid; gap: 6px; color: var(--ink-soft); font-size: 0.92rem; }
+.tips strong, .tips em, .tips s { color: var(--ink); }
+
+/* ---------- On this day ---------- */
+
+.memory {
+  position: relative;
+  margin: 10px 12px 4px;
+  border-radius: 16px;
+  background: var(--active);
+  border-left: 4px solid var(--mine);
+}
+.memory-open {
+  display: grid;
+  gap: 2px;
+  width: 100%;
+  padding: 12px 44px 12px 14px;
+  border: 0;
+  border-radius: 16px;
+  background: none;
+  text-align: left;
+}
+.memory-label { font-size: 0.78rem; font-weight: 700; color: var(--mine); }
+@media (prefers-color-scheme: dark) { .memory-label { color: var(--signal); } }
+.memory-text {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-size: 0.92rem;
+  color: var(--ink-soft);
+}
+.memory-close { position: absolute; top: 4px; right: 4px; width: 36px; height: 36px; }
 
 /* ---------- Photo viewer ---------- */
 
@@ -927,4 +1053,6 @@ dialog::backdrop { background: rgba(15, 17, 36, 0.5); }
 
 @media (prefers-reduced-motion: reduce) {
   .badge.boom::after { animation: none; display: none; }
+  .heart-burst { animation: none; transform: translate(-50%, -50%); }
+  .msg-wrap { transition: none; }
 }

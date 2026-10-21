@@ -63,7 +63,7 @@ function initials(name) {
 }
 
 function avatarEl(person, size = '') {
-  const name = person?.display_name || '?';
+  const name = state.nicknames.get(person?.id) || person?.display_name || '?';
   const colour = AVATAR_COLOURS[hashString(person?.id || name) % AVATAR_COLOURS.length];
   const el = h('span', { class: `avatar ${size}`.trim(), style: `background:${colour}`, 'aria-hidden': 'true' }, initials(name));
   if (state.avatars && person?.avatar_path) {
@@ -106,16 +106,48 @@ function listTime(ts) {
   return d.toLocaleDateString([], opts);
 }
 
+// *bold*, _italic_ and ~strikethrough~, like WhatsApp. Markers must sit at
+// word edges, so snake_case, 2*3*4 and web links are left alone.
+const STYLE_TAGS = { '*': 'strong', _: 'em', '~': 's' };
+const isWordChar = (ch) => !!ch && /[\p{L}\p{N}]/u.test(ch);
+
+function appendStyled(parent, text) {
+  const re = /([*_~])(\S(?:[^\n]*?\S)?)\1/g;
+  let last = 0;
+  let m;
+  while ((m = re.exec(text))) {
+    const start = m.index;
+    const end = start + m[0].length;
+    if (isWordChar(text[start - 1]) || isWordChar(text[end]) || text[start - 1] === m[1]) {
+      re.lastIndex = start + 1;
+      continue;
+    }
+    if (start > last) parent.append(text.slice(last, start));
+    const el = document.createElement(STYLE_TAGS[m[1]]);
+    appendStyled(el, m[2]); // styles can be combined, e.g. *_both_*
+    parent.append(el);
+    last = end;
+  }
+  if (last < text.length) parent.append(text.slice(last));
+}
+
+// The same text with the style markers removed (for previews).
+function plainText(text) {
+  const span = document.createElement('span');
+  appendStyled(span, text || '');
+  return span.textContent;
+}
+
 function appendLinkified(parent, text) {
   let last = 0;
   for (const match of text.matchAll(URL_RE)) {
     const url = match[0].replace(/[.,!?;:)\]}'"]+$/, '');
     const start = match.index;
-    if (start > last) parent.append(text.slice(last, start));
+    if (start > last) appendStyled(parent, text.slice(last, start));
     parent.append(h('a', { href: url, target: '_blank', rel: 'noopener noreferrer' }, url));
     last = start + url.length;
   }
-  if (last < text.length) parent.append(text.slice(last));
+  if (last < text.length) appendStyled(parent, text.slice(last));
 }
 
 let toastTimer;
@@ -224,6 +256,9 @@ const state = {
   avatars: false,        // profile pictures + delete chat set up on the server?
   extras: false,         // typing, edit, chat colours set up on the server?
   editing: null,         // message being edited
+  later: false,          // send later + nicknames set up on the server?
+  nicknames: new Map(),  // user id -> your private nickname for them
+  scheduled: new Map(),  // conversation id -> [your waiting scheduled messages]
   channel: null,
   live: false,
   started: false,
@@ -250,6 +285,9 @@ function resetState() {
   state.extras = false;
   state.editing = null;
   state.editDraft = '';
+  state.later = false;
+  state.nicknames = new Map();
+  state.scheduled = new Map();
   state.live = false;
   state.started = false;
 }
@@ -258,21 +296,27 @@ const msgColumns = () => (state.extras ? MSG_COLUMNS_V4 : state.features ? MSG_C
 
 // Which setup files have been run? (The app keeps working without them.)
 async function detectFeatures() {
-  const [v2, v3, v4] = await Promise.all([
+  const [v2, v3, v4, v5] = await Promise.all([
     supabase.from('messages').select('deleted_at').limit(1),
     supabase.from('profiles').select('avatar_path').limit(1),
     supabase.from('messages').select('edited_at').limit(1),
+    supabase.from('nicknames').select('target_id').limit(1),
   ]);
   // Each setup file builds on the one before it.
   state.features = !v2.error;
   state.avatars = state.features && !v3.error;
   state.extras = state.avatars && !v4.error;
+  state.later = state.extras && !v5.error;
   $('btn-attach').hidden = !state.features;
   $('btn-chat-menu').hidden = !state.avatars && !state.extras;
   $('chat-delete-section').hidden = !state.avatars;
   $('chat-colour-section').hidden = !state.extras;
   $('avatar-edit').hidden = !state.avatars;
   $('privacy-section').hidden = !state.extras;
+  $('chat-nickname-section').hidden = !state.later;
+  $('tips-section').hidden = !state.features;
+  $('tip-later').hidden = !state.later;
+  $('tip-nickname').hidden = !state.later;
 }
 
 // ---------------------------------------------------------------------
@@ -294,6 +338,7 @@ function start() {
   wireInstallAndNotifications();
   wireProfilePictureAndChatOptions();
   wireExtras();
+  wireLaterAndNicknames();
   registerServiceWorker();
   initAutoUpdate();
 }
@@ -314,6 +359,7 @@ async function handleSession(session) {
   try {
     await detectFeatures();
     await loadProfiles();
+    await loadNicknames();
   } catch (error) {
     currentUserId = null;
     showBootError(explainLoadError(error));
@@ -347,6 +393,7 @@ async function startApp() {
   subscribe();
   renderNudge();
   resyncNotifications();
+  loadMemory();
 
   // Opened from a notification: go straight to that chat.
   const chatFromLink = new URLSearchParams(location.search).get('chat');
@@ -366,6 +413,7 @@ function stopApp() {
   $('message-list').replaceChildren();
   $('conn-banner').hidden = true;
   $('nudge').hidden = true;
+  $('memory-card').hidden = true;
   $('screen-app').classList.remove('show-chat');
   updateTitle();
 }
@@ -410,6 +458,7 @@ async function loadChats() {
   if (state.chats.some((c) => c.other_user_id && !state.profiles.has(c.other_user_id))) {
     await loadProfiles().catch(() => {});
   }
+  saveNicknamesForNotifications();
 
   // The chat you're looking at has nothing unread.
   const active = activeChat();
@@ -552,6 +601,11 @@ function subscribe() {
   if (state.extras) {
     channel = channel.on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'conversations' }, (payload) => onConversationUpdate(payload.new));
   }
+  if (state.later) {
+    channel = channel
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'scheduled_messages' }, (payload) => onScheduledChange(payload.new))
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'scheduled_messages' }, (payload) => onScheduledChange(payload.new));
+  }
   state.channel = channel
     .subscribe((status) => {
       if (!state.started) return;
@@ -571,10 +625,12 @@ async function resync() {
   if (resyncing || !state.started) return;
   resyncing = true;
   try {
+    await loadNicknames();
     await loadChats();
     if (state.activeId) {
       const id = state.activeId;
       await fetchNewer(id);
+      await loadScheduled(id);
       if (state.activeId === id) {
         renderMessages();
         if (document.visibilityState === 'visible') markRead(id);
@@ -623,8 +679,8 @@ function onIncoming(m) {
   }
 
   if (!mine) {
-    const name = state.profiles.get(m.sender_id)?.display_name || 'Someone';
-    const what = m.photo_path ? 'sent a photo' : m.body;
+    const name = shownName(m.sender_id);
+    const what = m.photo_path ? 'sent a photo' : plainText(m.body);
     announce(m.conversation_id === state.activeId ? `${name}: ${what}` : `New message from ${name}`);
   }
 }
@@ -739,19 +795,24 @@ function updateTitle() {
 //  Rendering
 // ---------------------------------------------------------------------
 
+// Your nickname for someone if you've set one, otherwise their own name.
+function shownName(userId) {
+  return state.nicknames.get(userId) || state.profiles.get(userId)?.display_name || 'Someone';
+}
+
 function chatName(chat) {
   if (chat.is_group) return chat.title || 'Group';
-  return state.profiles.get(chat.other_user_id)?.display_name || 'Someone';
+  return shownName(chat.other_user_id);
 }
 
 function personName(userId) {
   if (userId === state.user?.id) return 'You';
-  return state.profiles.get(userId)?.display_name || 'Someone';
+  return shownName(userId);
 }
 
 function previewText(kind, body, senderId) {
   const mine = senderId === state.user?.id;
-  const text = (body || '').replace(/\s+/g, ' ').trim();
+  const text = plainText(body).replace(/\s+/g, ' ').trim();
   if (kind === 'unsent') return mine ? 'You unsent a message' : 'Message unsent';
   if (kind === 'photo') return (mine ? 'You: ' : '') + (text ? `📷 ${text}` : '📷 Photo');
   if (!text) return 'No messages yet';
@@ -762,7 +823,7 @@ function previewText(kind, body, senderId) {
 function snippet(m) {
   if (!m) return 'Original message';
   if (m.deleted_at) return 'Message unsent';
-  const text = (m.body || '').replace(/\s+/g, ' ').trim();
+  const text = plainText(m.body).replace(/\s+/g, ' ').trim();
   if (m.photo_path) return text ? `📷 ${text}` : '📷 Photo';
   return text;
 }
@@ -818,7 +879,9 @@ function renderChatHeader() {
   $('chat-avatar').replaceChildren(avatarEl(other ?? { id: chat.conversation_id, display_name: chatName(chat) }, 'sm'));
   $('chat-name').textContent = chatName(chat);
   const typing = typingUntil > Date.now();
-  $('chat-username').textContent = typing ? 'typing…' : other ? `@${other.username}` : '';
+  const nick = state.nicknames.get(chat.other_user_id);
+  $('chat-username').textContent = typing ? 'typing…'
+    : other ? (nick ? `${other.display_name} (@${other.username})` : `@${other.username}`) : '';
   $('chat-username').classList.toggle('typing', typing);
 }
 
@@ -847,6 +910,12 @@ function renderMessages(stickToBottom = false) {
     }
     list.append(messageEl(m, sameRun(prev, m), !sameRun(m, next)));
   });
+
+  const waiting = state.scheduled.get(convId) || [];
+  if (waiting.length) {
+    list.append(h('p', { class: 'day' }, 'Scheduled'));
+    for (const sm of waiting) list.append(scheduledEl(sm));
+  }
 
   $('btn-older').hidden = !state.hasMore.get(convId);
   if (stickToBottom || wasNearBottom) {
@@ -896,7 +965,7 @@ function messageEl(m, grouped, tail) {
         type: 'button',
         class: 'msg-photo',
         'aria-label': 'Open photo',
-        onclick: (e) => { if (!local) { e.stopPropagation(); openViewer(m); } },
+        onclick: (e) => { if (!local) { e.stopPropagation(); tapped(m, bubble, () => openViewer(m)); } },
       }, img));
     }
     if (m.body) {
@@ -956,11 +1025,24 @@ function attachMessageMenu(el, m) {
   let timer = null;
   let startX = 0;
   let startY = 0;
+  let swipe = 0;     // how far it's been dragged right (swipe to reply)
+  let swiping = false;
   const cancel = () => { clearTimeout(timer); timer = null; };
+  const endSwipe = (reply) => {
+    if (!swiping) return;
+    const wrap = el.parentElement;
+    wrap?.classList.remove('swiping', 'swipe-ready');
+    if (wrap) wrap.style.transform = '';
+    swiping = false;
+    suppressClickUntil = Date.now() + 300;
+    if (reply && swipe > 60) startReply(m);
+    swipe = 0;
+  };
   el.addEventListener('pointerdown', (e) => {
     if (e.pointerType === 'mouse') return;
     startX = e.clientX;
     startY = e.clientY;
+    swipe = 0;
     cancel();
     timer = setTimeout(() => {
       timer = null;
@@ -970,10 +1052,30 @@ function attachMessageMenu(el, m) {
     }, 450);
   });
   el.addEventListener('pointermove', (e) => {
-    if (timer && Math.hypot(e.clientX - startX, e.clientY - startY) > 10) cancel();
+    if (e.pointerType === 'mouse') return;
+    const dx = e.clientX - startX;
+    const dy = e.clientY - startY;
+    if (timer && Math.hypot(dx, dy) > 10) cancel();
+    if (!swiping && state.features && dx > 12 && Math.abs(dy) < 10) {
+      swiping = true;
+      try { el.setPointerCapture(e.pointerId); } catch { /* fine */ }
+      el.parentElement?.classList.add('swiping');
+    }
+    if (swiping) {
+      swipe = Math.max(0, Math.min(dx, 90));
+      const wrap = el.parentElement;
+      if (wrap) wrap.style.transform = `translateX(${swipe}px)`;
+      wrap?.classList.toggle('swipe-ready', swipe > 60);
+    }
   });
-  el.addEventListener('pointerup', cancel);
-  el.addEventListener('pointercancel', cancel);
+  el.addEventListener('pointerup', () => { cancel(); endSwipe(true); });
+  el.addEventListener('pointercancel', () => { cancel(); endSwipe(false); });
+  // Double-tap (or double-click) for ❤️; no text selection on double-click.
+  el.addEventListener('mousedown', (e) => { if (e.detail > 1) e.preventDefault(); });
+  el.addEventListener('click', (e) => {
+    if (e.defaultPrevented || e.target.closest('a')) return;
+    tapped(m, el, null);
+  });
   el.addEventListener('contextmenu', (e) => {
     e.preventDefault();
     cancel();
@@ -1059,6 +1161,7 @@ async function openChat(convId) {
   $('btn-older').hidden = true;
   if (state.messages.has(convId)) await fetchNewer(convId);
   else await fetchLatest(convId);
+  await loadScheduled(convId);
   if (state.activeId !== convId) return;
 
   renderMessages(true);
@@ -1380,8 +1483,8 @@ function renderPeople(query) {
   const q = query.trim().toLowerCase();
   const everyone = [...state.profiles.values()].filter((p) => p.id !== state.user.id);
   const matches = everyone
-    .filter((p) => !q || p.display_name.toLowerCase().includes(q) || p.username.includes(q))
-    .sort((a, b) => a.display_name.localeCompare(b.display_name));
+    .filter((p) => !q || shownName(p.id).toLowerCase().includes(q) || p.display_name.toLowerCase().includes(q) || p.username.includes(q))
+    .sort((a, b) => shownName(a.id).localeCompare(shownName(b.id)));
 
   const list = $('people-list');
   list.replaceChildren();
@@ -1390,7 +1493,7 @@ function renderPeople(query) {
       h('button', { type: 'button', class: 'person', onclick: () => startChatWith(p.id) },
         avatarEl(p, 'sm'),
         h('span', {},
-          h('span', { class: 'person-name' }, p.display_name),
+          h('span', { class: 'person-name' }, shownName(p.id)),
           h('span', { class: 'person-handle' }, `@${p.username}`)))));
   }
 
@@ -1526,6 +1629,10 @@ function openChatOptions() {
   if (!chat) return;
   $('chat-delete-note').textContent = `Deletes this chat and its messages from your Boom Boom only. ${chatName(chat)} keeps their copy. To remove a message for everyone, unsend it instead.`;
   renderSwatches();
+  const other = state.profiles.get(chat.other_user_id);
+  $('nickname-input').value = state.nicknames.get(chat.other_user_id) || '';
+  $('nickname-input').placeholder = other?.display_name || '';
+  $('nickname-status').hidden = true;
   resetDeleteChat();
   $('dlg-chat').showModal();
 }
@@ -1766,6 +1873,7 @@ async function disableNotifications() {
 
 // Before signing out: stop this device getting this account's notifications.
 async function forgetThisDevice() {
+  forgetNicknamesOnThisDevice();
   const sub = await currentPushSubscription();
   if (!sub) return;
   await supabase.from('push_subscriptions').delete().eq('endpoint', sub.endpoint).then(() => {}, () => {});
@@ -2075,8 +2183,30 @@ function wireUi() {
   });
   $('composer').addEventListener('submit', (e) => {
     e.preventDefault();
+    if (Date.now() < suppressSendUntil) return; // that tap was a hold for "send later"
     sendCurrent();
     if (isTouch) input.focus(); // keep the keyboard up
+  });
+  // Hold the send button (or right-click it) to send later.
+  const send = $('btn-send');
+  let sendHold = null;
+  send.addEventListener('pointerdown', () => {
+    if (!state.later || send.disabled || state.editing) return;
+    sendHold = setTimeout(() => {
+      sendHold = null;
+      suppressSendUntil = Date.now() + 800;
+      navigator.vibrate?.(10);
+      openSendLater();
+    }, 500);
+  });
+  for (const type of ['pointerup', 'pointerleave', 'pointercancel']) {
+    send.addEventListener(type, () => { clearTimeout(sendHold); sendHold = null; });
+  }
+  send.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    if (!state.later || send.disabled || state.editing) return;
+    if (isTouch) suppressSendUntil = Date.now() + 800; // a long-press may end in a tap
+    openSendLater();
   });
 
   // New chat sheet
@@ -2484,6 +2614,411 @@ function wireExtras() {
     }
     state.me = { ...state.me, share_typing: on };
     state.profiles.set(state.me.id, state.me);
+  });
+}
+
+// ---------------------------------------------------------------------
+//  Double-tap for ❤️
+// ---------------------------------------------------------------------
+
+let lastTap = null;
+
+// A single tap does `single` (e.g. open the photo) unless a second tap on the
+// same message follows quickly, which hearts it instead.
+function tapped(m, bubble, single) {
+  if (!state.features || typeof m.id !== 'number') { single?.(); return; }
+  const now = Date.now();
+  if (lastTap && lastTap.id === m.id && now - lastTap.at < 320) {
+    clearTimeout(lastTap.timer);
+    lastTap = null;
+    heart(m);
+    return;
+  }
+  lastTap = { id: m.id, at: now, timer: single ? setTimeout(single, 300) : null };
+}
+
+function heart(m) {
+  if (m.deleted_at) return;
+  // Double-tap only ever adds a heart; it never takes one away.
+  if (state.reactions.get(m.id)?.get(state.user.id) !== '❤️') react(m, '❤️');
+  navigator.vibrate?.(8);
+  const bubble = $('message-list').querySelector(`.msg[data-id="${m.id}"]`);
+  if (!bubble) return;
+  // Drawn above the chat, so it survives the list redrawing underneath it.
+  const r = bubble.getBoundingClientRect();
+  const burst = h('span', {
+    class: 'heart-burst', 'aria-hidden': 'true', style: `left:${r.left + r.width / 2}px;top:${r.top + r.height / 2}px`,
+  }, '❤️');
+  document.body.append(burst);
+  setTimeout(() => burst.remove(), 900);
+}
+
+// ---------------------------------------------------------------------
+//  Nicknames (only you see them)
+// ---------------------------------------------------------------------
+
+async function loadNicknames() {
+  if (!state.later) return;
+  const { data, error } = await supabase.from('nicknames').select('target_id, nickname');
+  if (error) return; // real names still work
+  state.nicknames = new Map(data.map((n) => [n.target_id, n.nickname]));
+}
+
+async function saveNickname(e) {
+  e.preventDefault();
+  const chat = activeChat();
+  const target = chat?.other_user_id;
+  if (!target) return;
+  const input = $('nickname-input');
+  const value = input.value.trim().slice(0, 40);
+  const status = $('nickname-status');
+  const button = $('btn-nickname-save');
+  button.disabled = true;
+  const { error } = await supabase.rpc('set_nickname', { p_target: target, p_nickname: value || null });
+  button.disabled = false;
+  status.hidden = false;
+  if (error) {
+    status.textContent = isNetworkError(error) ? "Couldn't save the nickname. Check your connection." : error.message;
+    return;
+  }
+  if (value) state.nicknames.set(target, value);
+  else state.nicknames.delete(target);
+  input.value = value;
+  status.textContent = value ? `Saved. Only you see "${value}".` : 'Nickname removed.';
+  $('chat-delete-note').textContent = `Deletes this chat and its messages from your Boom Boom only. ${chatName(chat)} keeps their copy. To remove a message for everyone, unsend it instead.`;
+  renderChatHeader();
+  renderChatList();
+  renderMessages();
+  saveNicknamesForNotifications();
+}
+
+// Notifications are shown by the service worker, which can't see your
+// nicknames. So this device keeps a tiny list of them for it, which never
+// leaves the device.
+const NICKNAME_CACHE = 'boom-local';
+const nicknameFile = () => new URL('__nicknames.json', location.href).href;
+let savedNicknames = null;
+
+async function saveNicknamesForNotifications() {
+  if (!('caches' in window)) return;
+  const map = {};
+  for (const c of state.chats) {
+    const nick = c.other_user_id && state.nicknames.get(c.other_user_id);
+    if (nick) map[c.conversation_id] = nick;
+  }
+  const json = JSON.stringify(map);
+  if (json === savedNicknames) return;
+  try {
+    const cache = await caches.open(NICKNAME_CACHE);
+    await cache.put(nicknameFile(), new Response(json, { headers: { 'content-type': 'application/json' } }));
+    savedNicknames = json;
+  } catch { /* notifications just use real names */ }
+}
+
+function forgetNicknamesOnThisDevice() {
+  savedNicknames = null;
+  if ('caches' in window) caches.delete(NICKNAME_CACHE).catch(() => {});
+}
+
+// ---------------------------------------------------------------------
+//  Send later (hold the send button)
+// ---------------------------------------------------------------------
+
+let suppressSendUntil = 0;
+let scheduling = false;
+let menuScheduled = null;
+let scheduledDeleteArmed = null;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+// "today at 8:00 pm", "tomorrow at 8:00 am", "Sat 24 Oct at 9:30 pm"
+function whenLabel(ts) {
+  const d = new Date(ts);
+  const now = new Date();
+  const tomorrow = new Date(); tomorrow.setDate(now.getDate() + 1);
+  const at = clockTime(d);
+  if (d.toDateString() === now.toDateString()) return `today at ${at}`;
+  if (d.toDateString() === tomorrow.toDateString()) return `tomorrow at ${at}`;
+  const opts = { weekday: 'short', day: 'numeric', month: 'short' };
+  if (d.getFullYear() !== now.getFullYear()) opts.year = 'numeric';
+  return `${d.toLocaleDateString([], opts)} at ${at}`;
+}
+
+// The format a datetime-local box wants, in your own time zone.
+function localInputValue(d) {
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function laterPicks() {
+  const now = new Date();
+  const inAnHour = new Date(now.getTime() + 60 * 60 * 1000);
+  inAnHour.setSeconds(0, 0);
+  const midnight = new Date(now);
+  midnight.setHours(24, 0, 0, 0);
+  const morning = new Date(now);
+  morning.setHours(8, 0, 0, 0);
+  if (morning - now < 30 * 60 * 1000) morning.setDate(morning.getDate() + 1);
+  return [
+    ['In 1 hour', inAnHour],
+    ['Midnight', midnight],
+    [morning.getDate() === now.getDate() ? 'This morning' : 'Tomorrow morning', morning],
+  ];
+}
+
+function openSendLater() {
+  const dlg = $('dlg-later');
+  const body = $('composer-input').value.trim();
+  if (!state.later || !state.activeId || !body || state.editing || dlg.open) return;
+  const preview = $('later-preview');
+  preview.replaceChildren();
+  appendStyled(preview, body);
+  $('later-picks').replaceChildren(...laterPicks().map(([label, when]) => h('button', {
+    type: 'button',
+    class: 'later-pick',
+    onclick: () => scheduleCurrent(when),
+  }, h('strong', {}, label), h('span', {}, whenLabel(when)))));
+  const box = $('later-when');
+  const nextHour = new Date(Date.now() + 2 * 60 * 60 * 1000);
+  nextHour.setMinutes(0, 0, 0);
+  box.min = localInputValue(new Date(Date.now() + 60 * 1000));
+  box.max = localInputValue(new Date(Date.now() + 365 * DAY_MS));
+  box.value = localInputValue(nextHour);
+  $('later-error').hidden = true;
+  dlg.showModal();
+}
+
+async function scheduleCurrent(when) {
+  const convId = state.activeId;
+  const input = $('composer-input');
+  const body = input.value.trim();
+  const err = $('later-error');
+  const fail = (text) => { err.textContent = text; err.hidden = false; };
+  err.hidden = true;
+  if (!convId || !body || scheduling) return;
+  if (!(when instanceof Date) || Number.isNaN(when.getTime())) return fail('Pick a date and time.');
+  if (when.getTime() < Date.now() + 30 * 1000) return fail('Pick a time at least a minute from now.');
+  if (when.getTime() > Date.now() + 365 * DAY_MS) return fail('Messages can be scheduled up to a year ahead.');
+
+  scheduling = true;
+  const replyTo = typeof state.replyTo?.id === 'number' ? state.replyTo.id : null;
+  const { data: id, error } = await supabase.rpc('schedule_message', {
+    conv: convId, p_body: body, p_send_at: when.toISOString(), p_reply_to: replyTo,
+  });
+  scheduling = false;
+  if (error) return fail(isNetworkError(error) ? "Couldn't schedule it. Check your connection." : error.message);
+
+  $('dlg-later').close();
+  state.drafts.delete(convId);
+  if (state.activeId === convId) {
+    stopTyping();
+    input.value = '';
+    autosize();
+    clearReply();
+  }
+  onScheduledChange({ id, conversation_id: convId, sender_id: state.user.id, body, reply_to: replyTo, send_at: when.toISOString(), status: 'waiting' });
+  if (state.activeId === convId) renderMessages(true);
+  toast(`Scheduled for ${whenLabel(when)}.`);
+}
+
+async function loadScheduled(convId) {
+  if (!state.later) return;
+  const { data, error } = await supabase
+    .from('scheduled_messages')
+    .select('id, conversation_id, sender_id, body, reply_to, send_at, status')
+    .eq('conversation_id', convId)
+    .eq('status', 'waiting')
+    .order('send_at');
+  if (!error) state.scheduled.set(convId, data);
+}
+
+// A scheduled message was made, sent or cancelled (on any of your devices).
+function onScheduledChange(row) {
+  if (!state.started || !row?.conversation_id) return;
+  if (row.sender_id && row.sender_id !== state.user.id) return;
+  const list = (state.scheduled.get(row.conversation_id) || []).filter((x) => x.id !== row.id);
+  if (row.status === 'waiting') {
+    list.push(row);
+    list.sort((a, b) => time(a.send_at) - time(b.send_at));
+  }
+  state.scheduled.set(row.conversation_id, list);
+  if (menuScheduled?.id === row.id && row.status !== 'waiting') $('dlg-scheduled').close();
+  if (row.conversation_id === state.activeId) renderMessages();
+}
+
+function scheduledEl(sm) {
+  const bubble = h('div', {
+    class: 'msg mine tail scheduled', role: 'button', tabindex: '0', 'data-scheduled': sm.id, title: 'Scheduled message',
+  });
+  if (sm.reply_to) {
+    const original = findMessage(sm.conversation_id, sm.reply_to);
+    if (original) {
+      bubble.append(h('span', { class: 'msg-quote' }, h('strong', {}, personName(original.sender_id)), h('span', {}, snippet(original))));
+    }
+  }
+  const body = h('span', { class: 'msg-body' });
+  appendLinkified(body, sm.body);
+  bubble.append(body, h('span', { class: 'msg-meta' }, `🕓 Sends ${whenLabel(sm.send_at)}`));
+  bubble.addEventListener('click', (e) => { if (!e.target.closest('a')) openScheduledMenu(sm); });
+  bubble.addEventListener('keydown', (e) => {
+    if (e.target === bubble && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); openScheduledMenu(sm); }
+  });
+  return h('div', { class: 'msg-wrap mine' }, bubble);
+}
+
+function openScheduledMenu(sm) {
+  const dlg = $('dlg-scheduled');
+  if (dlg.open) return;
+  menuScheduled = sm;
+  $('scheduled-preview').textContent = `Sends ${whenLabel(sm.send_at)}: ${plainText(sm.body).replace(/\s+/g, ' ')}`;
+  resetScheduledDelete();
+  dlg.showModal();
+}
+
+function resetScheduledDelete() {
+  clearTimeout(scheduledDeleteArmed);
+  scheduledDeleteArmed = null;
+  const b = $('act-scheduled-delete');
+  b.textContent = 'Delete';
+  b.classList.remove('armed');
+}
+
+function scheduledGone(sm) {
+  toast('That message has already been sent.');
+  onScheduledChange({ ...sm, status: 'sent', body: '' });
+  loadScheduled(sm.conversation_id).then(() => { if (state.activeId === sm.conversation_id) renderMessages(); });
+}
+
+async function sendScheduledNow() {
+  const sm = menuScheduled;
+  $('dlg-scheduled').close();
+  if (!sm) return;
+  const { error } = await supabase.rpc('send_scheduled_now', { p_id: sm.id });
+  if (error) {
+    if (isNetworkError(error)) toast("Couldn't send it. Check your connection.");
+    else scheduledGone(sm);
+    return;
+  }
+  onScheduledChange({ ...sm, status: 'sent', body: '' });
+  if (state.activeId === sm.conversation_id) {
+    await fetchNewer(sm.conversation_id);
+    if (state.activeId === sm.conversation_id) renderMessages(true);
+  }
+}
+
+// Take it back into the message box to change it.
+async function editScheduled() {
+  const sm = menuScheduled;
+  $('dlg-scheduled').close();
+  if (!sm) return;
+  const { data: cancelled, error } = await supabase.rpc('cancel_scheduled', { p_id: sm.id });
+  if (error) { toast("Couldn't change it. Check your connection."); return; }
+  if (!cancelled) { scheduledGone(sm); return; }
+  onScheduledChange({ ...sm, status: 'cancelled', body: '' });
+  if (state.activeId === sm.conversation_id) {
+    const input = $('composer-input');
+    input.value = input.value.trim() ? `${input.value.trimEnd()}\n${sm.body}` : sm.body;
+    autosize();
+    const original = sm.reply_to && findMessage(sm.conversation_id, sm.reply_to);
+    if (original) startReply(original);
+    else input.focus();
+  }
+  toast('Back in the message box. Hold send to schedule it again.');
+}
+
+async function deleteScheduled() {
+  const b = $('act-scheduled-delete');
+  if (!scheduledDeleteArmed) {
+    b.textContent = 'Tap again to delete';
+    b.classList.add('armed');
+    scheduledDeleteArmed = setTimeout(resetScheduledDelete, 4000);
+    return;
+  }
+  resetScheduledDelete();
+  const sm = menuScheduled;
+  $('dlg-scheduled').close();
+  if (!sm) return;
+  const { data: cancelled, error } = await supabase.rpc('cancel_scheduled', { p_id: sm.id });
+  if (error) { toast("Couldn't delete it. Check your connection."); return; }
+  if (!cancelled) { scheduledGone(sm); return; }
+  onScheduledChange({ ...sm, status: 'cancelled', body: '' });
+  toast('Scheduled message deleted.');
+}
+
+// ---------------------------------------------------------------------
+//  On this day
+// ---------------------------------------------------------------------
+
+const MEMORY_HIDDEN_KEY = 'boom-memory-hidden';
+let memoryDay = null;
+
+async function loadMemory() {
+  const card = $('memory-card');
+  const today = new Date();
+  memoryDay = today.toDateString();
+  card.hidden = true;
+  if (!state.features || !state.chats.length) return;
+  const uid = state.user.id;
+  try {
+    if (localStorage.getItem(MEMORY_HIDDEN_KEY) === `${uid} ${memoryDay}`) return;
+  } catch { /* fine */ }
+  const joined = state.user.created_at ? time(state.user.created_at) - DAY_MS : 0;
+  const chats = new Set(state.chats.map((c) => c.conversation_id));
+
+  for (let years = 1; years <= 5; years++) {
+    const from = new Date(today.getFullYear() - years, today.getMonth(), today.getDate());
+    if (from.getTime() + DAY_MS < joined) return; // before you joined Boom Boom
+    if (from.getMonth() !== today.getMonth()) continue; // 29 February in a year without one
+    const to = new Date(from);
+    to.setDate(from.getDate() + 1);
+    const { data, error } = await supabase
+      .from('messages')
+      .select(MSG_COLUMNS_V2)
+      .gte('created_at', from.toISOString())
+      .lt('created_at', to.toISOString())
+      .is('deleted_at', null)
+      .order('created_at')
+      .limit(100);
+    if (error || state.user?.id !== uid) return;
+    const usable = (data || []).filter((m) => chats.has(m.conversation_id)
+      && time(m.created_at) > time(clearedAt(m.conversation_id))
+      && (m.photo_path || (m.body || '').trim()));
+    // Photos make the best memories; otherwise the first message that day.
+    const pick = usable.find((m) => m.photo_path) || usable[0];
+    if (pick) { showMemory(pick, years); return; }
+  }
+}
+
+function showMemory(m, years) {
+  const chat = state.chats.find((c) => c.conversation_id === m.conversation_id);
+  if (!chat) return;
+  const date = new Date(m.created_at).toLocaleDateString([], { day: 'numeric', month: 'long', year: 'numeric' });
+  $('memory-label').textContent = `On this day, ${years === 1 ? 'a year' : `${years} years`} ago · ${date}`;
+  $('memory-chat').textContent = chatName(chat);
+  $('memory-text').textContent = `${m.sender_id === state.user.id ? 'You: ' : ''}${snippet(m)}`;
+  $('memory-open').onclick = () => openSearchResult(m);
+  $('memory-card').hidden = false;
+}
+
+function hideMemory() {
+  $('memory-card').hidden = true;
+  try { localStorage.setItem(MEMORY_HIDDEN_KEY, `${state.user.id} ${new Date().toDateString()}`); } catch { /* fine */ }
+}
+
+function wireLaterAndNicknames() {
+  $('chat-nickname-section').addEventListener('submit', saveNickname);
+  $('later-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const value = $('later-when').value;
+    scheduleCurrent(value ? new Date(value) : null);
+  });
+  $('act-send-now').addEventListener('click', sendScheduledNow);
+  $('act-scheduled-edit').addEventListener('click', editScheduled);
+  $('act-scheduled-delete').addEventListener('click', deleteScheduled);
+  $('dlg-scheduled').addEventListener('close', () => { resetScheduledDelete(); menuScheduled = null; });
+  $('memory-close').addEventListener('click', hideMemory);
+  // Left open overnight? Check for a new memory when you come back.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && state.started && memoryDay !== new Date().toDateString()) loadMemory();
   });
 }
 

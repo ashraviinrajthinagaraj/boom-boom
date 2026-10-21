@@ -103,6 +103,16 @@
           <button id="nudge-later" class="btn ghost small" type="button">Not now</button>
         </div>
       </div>
+      <div id="memory-card" class="memory" hidden>
+        <button id="memory-open" class="memory-open" type="button">
+          <span class="memory-label" id="memory-label"></span>
+          <strong id="memory-chat"></strong>
+          <span id="memory-text" class="memory-text"></span>
+        </button>
+        <button id="memory-close" class="icon-btn memory-close" type="button" aria-label="Hide for today" title="Hide for today">
+          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+        </button>
+      </div>
       <ul id="chat-list" class="chat-list"></ul>
       <div id="chat-list-empty" class="empty" hidden>
         <p>No chats yet.</p>
@@ -158,7 +168,7 @@
           </button>
           <input id="photo-input" type="file" accept="image/*" multiple hidden>
           <textarea id="composer-input" rows="1" placeholder="Message" aria-label="Message" maxlength="4000"></textarea>
-          <button class="send" id="btn-send" type="submit" aria-label="Send" disabled>
+          <button class="send" id="btn-send" type="submit" aria-label="Send" title="Send" disabled>
             <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M12 19V6M6 11l6-6 6 6" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
           </button>
         </form>
@@ -204,6 +214,16 @@
           <span>Show when I'm typing</span>
         </label>
         <p class="hint">When this is off, nobody sees "typing…" from you.</p>
+      </section>
+
+      <section class="form" id="tips-section" aria-labelledby="tips-title" hidden>
+        <h3 id="tips-title">Tips</h3>
+        <ul class="tips">
+          <li><strong>*bold*</strong>, <em>_italic_</em> and <s>~strikethrough~</s>: type the symbols around your words.</li>
+          <li id="tip-gestures">Swipe a message right to reply. Double-tap it to ❤️.</li>
+          <li id="tip-later" hidden>Hold the send button to send a message later.</li>
+          <li id="tip-nickname" hidden>Give a friend a nickname in a chat's ⋮ menu. Only you see it.</li>
+        </ul>
       </section>
 
       <section class="form" id="install-section" aria-labelledby="install-title">
@@ -295,6 +315,14 @@
       </button>
     </header>
     <div class="sheet-body">
+      <form class="form" id="chat-nickname-section" novalidate hidden>
+        <label>Nickname
+          <span class="hint">Only you see this. Leave it empty to use their own name.</span>
+          <input id="nickname-input" maxlength="40" autocomplete="off">
+        </label>
+        <p id="nickname-status" class="muted" role="status" hidden></p>
+        <button type="submit" class="btn primary small" id="btn-nickname-save">Save nickname</button>
+      </form>
       <section class="form" id="chat-colour-section" aria-labelledby="chat-colour-title" hidden>
         <h3 id="chat-colour-title">Chat colour</h3>
         <div id="swatches" class="swatches" role="group" aria-label="Chat colour"></div>
@@ -305,6 +333,38 @@
         <p id="chat-delete-note" class="muted"></p>
         <button id="act-delete-chat" class="btn danger-btn" type="button">Delete chat</button>
       </section>
+    </div>
+  </dialog>
+
+  <!-- Send later (hold the send button) -->
+  <dialog id="dlg-later" class="sheet" aria-labelledby="dlg-later-title">
+    <header class="sheet-head">
+      <h2 id="dlg-later-title">Send later</h2>
+      <button class="icon-btn" type="button" data-close aria-label="Close">
+        <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+      </button>
+    </header>
+    <div class="sheet-body later-body">
+      <p id="later-preview" class="later-preview"></p>
+      <div id="later-picks" class="later-picks" role="group" aria-label="Quick times"></div>
+      <form id="later-form" class="form" novalidate>
+        <label>Pick a date and time
+          <input type="datetime-local" id="later-when" required>
+        </label>
+        <p id="later-error" class="form-error" role="alert" hidden></p>
+        <button type="submit" class="btn primary" id="btn-later-schedule">Schedule</button>
+      </form>
+      <p class="muted later-note">It sends even if your phone is off. Until then, only you can see it.</p>
+    </div>
+  </dialog>
+
+  <!-- Tap a scheduled message -->
+  <dialog id="dlg-scheduled" class="sheet msg-sheet" aria-labelledby="scheduled-preview">
+    <p id="scheduled-preview" class="msg-sheet-preview"></p>
+    <div class="msg-actions">
+      <button id="act-send-now" class="act" type="button">Send now</button>
+      <button id="act-scheduled-edit" class="act" type="button">Edit</button>
+      <button id="act-scheduled-delete" class="act danger" type="button">Delete</button>
     </div>
   </dialog>
 

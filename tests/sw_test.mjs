@@ -10,7 +10,21 @@ const source = readFileSync(new URL('../sw.js', import.meta.url), 'utf8');
 const results = [];
 const check = (cond, label) => results.push(`${cond ? 'PASS' : 'FAIL'}  ${label}`);
 
-function load({ userAgent = 'Mozilla/5.0 (Linux; Android 14) Chrome/130 Mobile', windows = [] } = {}) {
+// A stand-in for the browser's Cache Storage, holding what the app saved.
+function fakeCaches(files = {}) {
+  return {
+    async open(name) {
+      return {
+        async match(url) {
+          const body = files[`${name} ${url}`];
+          return body == null ? undefined : { json: async () => JSON.parse(body) };
+        },
+      };
+    },
+  };
+}
+
+function load({ userAgent = 'Mozilla/5.0 (Linux; Android 14) Chrome/130 Mobile', windows = [], caches = fakeCaches() } = {}) {
   const handlers = {};
   const shown = [];
   const opened = [];
@@ -30,7 +44,7 @@ function load({ userAgent = 'Mozilla/5.0 (Linux; Android 14) Chrome/130 Mobile',
     skipWaiting: () => {},
     addEventListener: (type, fn) => { handlers[type] = fn; },
   };
-  vm.runInNewContext(source, { self, URL, console, Date, encodeURIComponent });
+  vm.runInNewContext(source, { self, URL, console, Date, encodeURIComponent, String, caches });
   async function fire(type, event) {
     let pending;
     handlers[type]({ ...event, waitUntil: (p) => { pending = p; } });
@@ -72,6 +86,25 @@ const pushEvent = (obj) => ({ data: { json: () => obj, text: () => JSON.stringif
   const sw = load();
   await sw.fire('push', { data: { json: () => { throw new Error('bad'); }, text: () => 'plain text' } });
   check(sw.shown.length === 1 && sw.shown[0].title === 'Boom Boom' && sw.shown[0].body === 'plain text', 'Odd payloads still show a sensible notification');
+}
+
+// Nicknames: notifications use the name you gave your friend
+{
+  const file = 'boom-local https://ashraviinrajthinagaraj.github.io/boom-boom/__nicknames.json';
+  const sw = load({ caches: fakeCaches({ [file]: JSON.stringify({ c1: 'Bala Bro' }) }) });
+  await sw.fire('push', pushEvent({ title: 'Bala Krishnan', body: 'Hi', conversation_id: 'c1' }));
+  await sw.fire('push', pushEvent({ title: 'Chen', body: 'Yo', conversation_id: 'c2' }));
+  check(sw.shown[0].title === 'Bala Bro' && sw.shown[1].title === 'Chen', 'Notifications use your nickname, and real names for everyone else');
+  const broken = load({ caches: { open: async () => { throw new Error('storage blocked'); } } });
+  await broken.fire('push', pushEvent({ title: 'Bala Krishnan', body: 'Hi', conversation_id: 'c1' }));
+  check(broken.shown[0]?.title === 'Bala Krishnan', 'If the nickname list can\'t be read, the real name is used');
+}
+
+// Text styling markers don't show up in notifications
+{
+  const sw = load();
+  await sw.fire('push', pushEvent({ title: 'Bala', body: 'see you *tonight* at _8_ ~maybe~ https://x.com/_a_ and snake_case_name', conversation_id: 'c9' }));
+  check(sw.shown[0].body === 'see you tonight at 8 maybe https://x.com/_a_ and snake_case_name', `Styling symbols are removed from the preview, links untouched (${sw.shown[0].body})`);
 }
 
 // Tapping: open the right chat

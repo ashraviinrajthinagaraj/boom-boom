@@ -11,6 +11,11 @@ Created by Ashraviinraj Thinagaraj.
 - Reactions (👍 ❤️ 😂 😮 😢 🔥), replies that quote the original, and unsend for everyone
 - Profile pictures, and "delete chat" (for you; your friend keeps their copy)
 - "typing…" (each person can switch it off), edit within 15 minutes, search, and a colour for each chat
+- Text styling: `*bold*`, `_italic_` and `~strikethrough~`, the WhatsApp way
+- **Send later**: hold the send button to schedule a message (midnight birthday wishes, sorted)
+- **Nicknames** for your friends that only you can see
+- **Swipe right** on a message to reply, **double-tap** it to ❤️
+- **On this day**: a little card with something from your chats a year ago
 - **CPR**: a scheduled check-in that stops the free Supabase project from pausing
 - Updates itself: when a new version is on GitHub, the app refreshes the next time you come back to it
 - Unread badges, a count in the browser tab, and a little "boom" ripple when a message lands in another chat
@@ -108,6 +113,16 @@ If you already deployed `send-push`, update it too so photo notifications say "�
 - **Chat colours:** in a chat, **⋮ → Chat colour**. Both of you see the same colour.
 - **CPR:** the [`CPR` workflow](.github/workflows/cpr.yml) gives Supabase a tiny check-in every 3 days so the free project never pauses during quiet weeks. See it under **Actions → CPR** on GitHub, where you can also tap **Run workflow** to test it. If it ever fails, it says why (usually: the project is paused, so press **Resume project** in Supabase).
 
+## Send later and nicknames (one-time server setup)
+
+**SQL Editor → New query**: paste [`supabase/send-later-nicknames.sql`](supabase/send-later-nicknames.sql) and **Run**, once (after `chat-extras.sql`). It also switches on Supabase Cron, which sends scheduled messages. Until it's run, holding send just sends, and the nickname box stays hidden. Text styling, swipe, double-tap and On this day work without it.
+
+- **Send later:** type a message, then **press and hold the send button** (right-click it on a computer). Pick *In 1 hour*, *Midnight*, *Tomorrow morning*, or any date and time up to a year ahead. It waits at the bottom of the chat with a dashed outline and goes out within a minute of its time, even if your phone is off. Tap it to **Send now**, **Edit** (puts it back in the message box) or **Delete**. Your friend can't see it until it's sent, and once it's sent or deleted the waiting copy is wiped. Up to 25 at a time.
+- **Nicknames:** in a chat, **⋮ → Nickname**. Only you see it, everywhere in your Boom Boom, including notifications on your devices. Your friend's real name stays underneath it in the chat header. Leave it empty to go back to their real name.
+- **Text styling:** put `*stars*` around words for **bold**, `_underscores_` for _italic_ and `~tildes~` for ~~strikethrough~~. They can be combined (`*_like this_*`). Things like snake_case, 2\*3\*4 and web links are left alone. Previews and notifications show the plain words.
+- **Swipe right** on any message to reply to it. **Double-tap** (or double-click) a message to ❤️ it. Double-tapping never removes a heart; use press-and-hold for that.
+- **On this day:** when you open Boom Boom, a card at the top of your chat list can show something from the same day 1 to 5 years ago (it prefers photos). Tap it to jump to that message, or ✕ to hide it for the day. It only uses what's already in your chats, and skips unsent messages and chats you've deleted. Boom Boom started on 21 October 2026, so the first one can appear on 21 October 2027.
+
 ## Updates
 
 Boom Boom checks for a new version whenever you come back to it, and every 15 minutes while it's open. If you're not in the middle of something, it reloads itself straight away (and reopens the chat you were in). If you're typing, a yellow **Boom Boom has been updated. Tap to refresh.** button appears instead, and your half-written message is kept.
@@ -160,14 +175,16 @@ where email = 'friend@example.com';
 - *Storage*: the Free plan has 1 GB of file storage and 5 GB of downloads a month. At full quality that's very roughly 200–400 phone photos. Chats show a small preview, and the full photo only downloads when someone opens it. When storage fills up, sending photos fails until you delete some (Storage in the dashboard) or upgrade.
 - Photos aren't end-to-end encrypted, the same as messages.
 
-**Notifications show the message text** on the lock screen, like most messaging apps. They travel through Google's, Apple's or Mozilla's push service encrypted, so those services can't read them.
+**Notifications show the message text** on the lock screen, like most messaging apps. They travel through Google's, Apple's or Mozilla's push service encrypted, so those services can't read them. To show your nicknames, each device keeps a small list of them for its notifications; it never leaves the device and is wiped when you sign out.
 
-**Limits in this version.** One-to-one chats only. Messages up to 4,000 characters, photos up to 50 MB. Unsent messages leave a "message unsent" marker; there's no editing.
+**Scheduled messages** are stored in your Supabase database until they're sent, readable only by you (and you as the project owner). They're sent by the database itself, so they go out even if every phone is off.
+
+**Limits in this version.** One-to-one chats only. Messages up to 4,000 characters, photos up to 50 MB. Unsent messages leave a "message unsent" marker. Edits are allowed for 15 minutes. Scheduled messages are text only.
 
 ## Ideas for later
 
 - Group chats (the database is already shaped for them)
-- Typing indicators and read receipts
+- Read receipts
 
 ## Files
 
@@ -175,23 +192,24 @@ where email = 'friend@example.com';
 | --- | --- |
 | `index.html` | The page: sign in, profile setup, chat list, chat, settings |
 | `style.css` | All the styling, including dark mode |
-| `app.js` | Everything the app does: sign-in, chats, sending, photos, reactions, replies, unsend, live updates |
+| `app.js` | Everything the app does: sign-in, chats, sending, photos, reactions, replies, unsend, send later, nicknames, live updates |
 | `photo.js` | Removes location and camera details from photos without losing quality; makes previews |
 | `config.js` | Your Supabase URL and publishable key |
-| `sw.js` | Service worker: shows notifications and opens the right chat when you tap one |
+| `sw.js` | Service worker: shows notifications (with your nicknames) and opens the right chat when you tap one |
 | `manifest.webmanifest`, `icons/` | App name and icons for installing |
 | `supabase/schema.sql` | Tables, security rules and helper functions. Run once in Supabase |
 | `supabase/push.sql` | Notification devices and the trigger that calls send-push. Run once |
 | `supabase/features.sql` | Private photo storage, reactions, replies and unsend. Run once |
 | `supabase/avatars-and-delete.sql` | Profile pictures and delete chat. Run once |
 | `supabase/chat-extras.sql` | Typing, edit, chat colours, and the CPR check-in. Run once |
+| `supabase/send-later-nicknames.sql` | Scheduled messages (sent every minute by Supabase Cron) and nicknames. Run once |
 | `.github/workflows/cpr.yml` | CPR: keeps the free Supabase project awake |
 | `supabase/functions/send-push/` | The notification sender (Supabase Edge Function) |
 | `supabase/tests/`, `tests/` | Automated checks (see below) |
 
 ## Testing
 
-**Database rules** (145 checks: outsiders can't read or join chats or see their photos, nobody can send, react or unsend as someone else, a failing notification never blocks a message...). You need a local PostgreSQL (version 15+). Use a fresh database for each test file:
+**Database rules** (176 checks: outsiders can't read or join chats or see their photos, nobody can send, react or unsend as someone else, nobody can see your scheduled messages or nicknames, a failing notification never blocks a message...). You need a local PostgreSQL (version 15+). Use a fresh database for each test file:
 
 ```bash
 createdb boomtest
@@ -199,12 +217,14 @@ psql -d boomtest -f supabase/tests/supabase_stub.sql   # imitates a fresh Supaba
 psql -d boomtest -f supabase/tests/net_stub.sql        # stands in for pg_net
 psql -d boomtest -f supabase/tests/storage_stub.sql    # stands in for Supabase Storage
 psql -d boomtest -f supabase/tests/realtime_stub.sql   # stands in for Realtime's private channels
+psql -d boomtest -f supabase/tests/cron_stub.sql       # stands in for Supabase Cron
 psql -d boomtest -f supabase/schema.sql
 grep -v 'create extension if not exists pg_net' supabase/push.sql | psql -d boomtest
 psql -d boomtest -f supabase/features.sql
 psql -d boomtest -f supabase/avatars-and-delete.sql
 psql -d boomtest -f supabase/chat-extras.sql
-psql -d boomtest -f supabase/tests/security_tests.sql  # or push_tests / features_tests / avatars_delete_tests / extras_tests
+grep -v 'create extension if not exists pg_cron' supabase/send-later-nicknames.sql | psql -d boomtest
+psql -d boomtest -f supabase/tests/security_tests.sql  # or push_tests / features_tests / avatars_delete_tests / extras_tests / later_nicknames_tests
 dropdb boomtest
 ```
 
