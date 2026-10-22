@@ -140,11 +140,13 @@
           <button class="icon-btn back" id="btn-back" type="button" aria-label="Back to chats">
             <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
           </button>
-          <div id="chat-avatar"></div>
-          <div class="chat-who">
-            <h2 id="chat-name"></h2>
-            <p id="chat-username"></p>
-          </div>
+          <button id="chat-profile" class="chat-profile" type="button" title="Profile and chat options">
+            <span id="chat-avatar"></span>
+            <span class="chat-who">
+              <span id="chat-name" class="chat-name"></span>
+              <span id="chat-username" class="chat-sub"></span>
+            </span>
+          </button>
           <button class="icon-btn" id="btn-chat-menu" type="button" aria-label="Chat options" title="Chat options" hidden>
             <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><circle cx="12" cy="5" r="2" fill="currentColor"/><circle cx="12" cy="12" r="2" fill="currentColor"/><circle cx="12" cy="19" r="2" fill="currentColor"/></svg>
           </button>
@@ -334,12 +336,25 @@
   <!-- Chat options -->
   <dialog id="dlg-chat" class="sheet" aria-labelledby="dlg-chat-title">
     <header class="sheet-head">
-      <h2 id="dlg-chat-title">Chat options</h2>
+      <h2 id="dlg-chat-title">Profile</h2>
       <button class="icon-btn" type="button" data-close aria-label="Close">
         <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
       </button>
     </header>
     <div class="sheet-body">
+      <section class="profile" aria-label="Profile">
+        <button id="profile-avatar" class="profile-avatar" type="button" aria-label="View profile picture"></button>
+        <p id="profile-name" class="profile-name"></p>
+        <p id="profile-sub" class="profile-sub"></p>
+        <p id="profile-since" class="profile-since"></p>
+      </section>
+      <section class="form" id="chat-media-section" aria-labelledby="chat-media-title" hidden>
+        <h3 id="chat-media-title">Photos and files</h3>
+        <div id="media-grid" class="media-grid"></div>
+        <ul id="media-files" class="media-files"></ul>
+        <p id="media-empty" class="muted" hidden>Nothing shared yet. Photos and files you send each other show up here.</p>
+        <button id="media-more" class="btn ghost small" type="button" hidden>Show all photos</button>
+      </section>
       <form class="form" id="chat-nickname-section" novalidate hidden>
         <label>Nickname
           <span class="hint">Only you see this. Leave it empty to use their own name.</span>

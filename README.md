@@ -24,6 +24,7 @@ Created by Ashraviinraj Thinagaraj.
 - **What's new**: a short card after each update, so friends find new features
 - **App themes**: Classic, Midnight, Matcha, Sunset and Mono, each with a light and dark look (Midnight is always dark)
 - Messages that pop in, a bouncing **typing bubble**, and loading lines with a bit of personality
+- **Profiles**: tap your friend's name at the top of a chat to see their picture, how long you've been chatting, the photos and files you've shared, and the chat's settings
 - **CPR**: a scheduled check-in that stops the free Supabase project from pausing
 - Updates itself: when a new version is on GitHub, the app refreshes the next time you come back to it
 - Unread badges, a count in the browser tab, and a little "boom" ripple when a message lands in another chat

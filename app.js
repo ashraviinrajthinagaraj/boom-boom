@@ -1613,6 +1613,17 @@ async function showViewerPhoto() {
   save.hidden = true;
   status.hidden = false;
   status.textContent = 'Loading full photo…';
+  if (item.avatar) {
+    img.alt = 'Profile picture';
+    status.textContent = loadingLine();
+    try {
+      const url = await blobUrl('avatars', item.avatar);
+      if (token === viewer.token) { img.src = url; status.hidden = true; }
+    } catch {
+      if (token === viewer.token) status.textContent = "Couldn't load the picture. Check your connection.";
+    }
+    return;
+  }
   try {
     const quick = await photoUrl(item.thumb); // quick preview first
     if (token === viewer.token) img.src = quick;
@@ -1905,7 +1916,113 @@ function openChatOptions() {
   $('nickname-status').hidden = true;
   renderWallTiles();
   resetDeleteChat();
+  renderProfile(chat);
   $('dlg-chat').showModal();
+  loadProfileStats(chat);
+  loadChatMedia(chat);
+}
+
+// ---------------------------------------------------------------------
+//  Profile: tap your friend's name or picture at the top of a chat
+// ---------------------------------------------------------------------
+
+const MEDIA_PREVIEW = 12;
+let profileToken = 0;
+
+function renderProfile(chat) {
+  profileToken++;
+  const other = state.profiles.get(chat.other_user_id);
+  const hasPicture = !!(state.avatars && other?.avatar_path);
+  const pic = $('profile-avatar');
+  pic.replaceChildren(avatarEl(other ?? { id: chat.conversation_id, display_name: chatName(chat) }, 'xl'));
+  pic.disabled = !hasPicture;
+  pic.setAttribute('aria-label', hasPicture ? `View ${chatName(chat)}'s profile picture` : `${chatName(chat)} hasn't added a profile picture`);
+  renderProfileNames(chat);
+  $('profile-since').textContent = '';
+  $('chat-media-section').hidden = !state.features;
+  $('media-grid').replaceChildren();
+  $('media-files').replaceChildren();
+  $('media-empty').hidden = true;
+  $('media-more').hidden = true;
+}
+
+function renderProfileNames(chat) {
+  const other = state.profiles.get(chat.other_user_id);
+  const nick = state.nicknames.get(chat.other_user_id);
+  $('profile-name').textContent = chatName(chat);
+  $('profile-sub').textContent = other ? (nick ? `${other.display_name} · @${other.username}` : `@${other.username}`) : '';
+}
+
+// "Chatting since 21 October 2026 · 1,204 messages"
+async function loadProfileStats(chat) {
+  const token = profileToken;
+  const convId = chat.conversation_id;
+  const since = clearedAt(convId);
+  let counting = supabase.from('messages').select('id', { count: 'exact', head: true }).eq('conversation_id', convId).gt('created_at', since);
+  if (state.features) counting = counting.is('deleted_at', null);
+  const [first, total] = await Promise.all([
+    supabase.from('messages').select('created_at').eq('conversation_id', convId).gt('created_at', since).order('id').limit(1),
+    counting,
+  ]);
+  if (token !== profileToken) return;
+  const firstAt = first.data?.[0]?.created_at;
+  if (first.error) return;
+  if (!firstAt) {
+    $('profile-since').textContent = 'No messages yet. Say hi!';
+    return;
+  }
+  const date = new Date(firstAt).toLocaleDateString([], { day: 'numeric', month: 'long', year: 'numeric' });
+  const n = total.count;
+  $('profile-since').textContent = `Chatting since ${date}${typeof n === 'number' ? ` · ${n.toLocaleString()} message${n === 1 ? '' : 's'}` : ''}`;
+}
+
+// Photos (albums opened up) and files you've shared, newest first.
+async function loadChatMedia(chat, all = false) {
+  if (!state.features) return;
+  const token = profileToken;
+  const convId = chat.conversation_id;
+  const since = clearedAt(convId);
+  const shared = (column, limit) => supabase.from('messages').select(msgColumns())
+    .eq('conversation_id', convId).gt('created_at', since).is('deleted_at', null)
+    .not(column, 'is', null).order('id', { ascending: false }).limit(limit);
+  const [photos, files] = await Promise.all([
+    shared('photo_path', all ? 200 : MEDIA_PREVIEW + 1),
+    state.media ? shared('file_path', all ? 100 : 5) : Promise.resolve({ data: [] }),
+  ]);
+  if (token !== profileToken) return;
+  const tiles = [];
+  for (const m of photos.data || []) {
+    const list = Array.isArray(m.album) ? m.album : [{ thumb: m.photo_thumb_path }];
+    list.forEach((photo, i) => tiles.push({ m, i, thumb: photo.thumb }));
+  }
+  const shown = all ? tiles : tiles.slice(0, MEDIA_PREVIEW);
+  $('media-grid').replaceChildren(...shown.map(({ m, i, thumb }) => {
+    const img = h('img', { alt: '', decoding: 'async', loading: 'lazy' });
+    photoUrl(thumb).then((url) => { img.src = url; }, () => {});
+    return h('button', {
+      type: 'button', class: 'media-tile', 'aria-label': `Photo from ${dayLabel(m.created_at)}`,
+      onclick: () => openViewer(m, i),
+    }, img);
+  }));
+  const fileRows = files.data || [];
+  $('media-files').replaceChildren(...fileRows.map((m) => h('li', {}, h('button', {
+    type: 'button', class: 'media-file', onclick: () => downloadFile(m),
+  },
+  h('span', { class: 'file-icon', 'aria-hidden': 'true' }, fileExt(m.file_name) || 'FILE'),
+  h('span', { class: 'file-info' },
+    h('strong', {}, m.file_name),
+    h('span', {}, `${formatSize(m.file_size)} · ${m.sender_id === state.user.id ? 'You' : personName(m.sender_id)}, ${listTime(m.created_at)}`))))));
+  $('media-empty').hidden = tiles.length > 0 || fileRows.length > 0;
+  $('media-more').hidden = all || tiles.length <= MEDIA_PREVIEW && (photos.data || []).length <= MEDIA_PREVIEW;
+}
+
+// Their profile picture, big.
+function openAvatar() {
+  const other = state.profiles.get(activeChat()?.other_user_id);
+  if (!state.avatars || !other?.avatar_path) return;
+  viewer = { m: null, list: [{ avatar: other.avatar_path }], index: 0, token: viewer.token };
+  if (!$('dlg-photo').open) $('dlg-photo').showModal();
+  showViewerPhoto();
 }
 
 function resetDeleteChat() {
@@ -1946,6 +2063,12 @@ function wireProfilePictureAndChatOptions() {
   $('btn-avatar-remove').addEventListener('click', removeAvatar);
 
   $('btn-chat-menu').addEventListener('click', openChatOptions);
+  $('chat-profile').addEventListener('click', openChatOptions);
+  $('profile-avatar').addEventListener('click', openAvatar);
+  $('media-more').addEventListener('click', () => {
+    const chat = activeChat();
+    if (chat) loadChatMedia(chat, true);
+  });
   $('act-delete-chat').addEventListener('click', () => {
     const button = $('act-delete-chat');
     if (!deleteArmed) {
@@ -2975,6 +3098,8 @@ async function saveNickname(e) {
   renderChatHeader();
   renderChatList();
   renderMessages();
+  renderProfileNames(chat);
+  $('profile-avatar').replaceChildren(avatarEl(state.profiles.get(target) ?? { id: chat.conversation_id, display_name: chatName(chat) }, 'xl'));
   saveNicknamesForNotifications();
 }
 
@@ -3812,6 +3937,7 @@ const WHATS_NEW = [
     id: '2026-10-22-b', date: '22 October 2026', title: 'A livelier Boom Boom',
     items: [
       ['🎨', 'App themes.', 'Settings → App theme: Classic, Midnight, Matcha, Sunset or Mono.'],
+      ['👤', 'Profiles.', 'Tap your friend\'s name at the top of a chat to see their profile and everything you\'ve shared.'],
       ['💥', 'Messages pop.', 'Yours whoosh in with a tiny boom; your friend\'s slide in.'],
       ['💬', 'Typing bubble.', 'Three bouncing dots while your friend is typing.'],
       ['🛵', 'Atok is on his way.', 'Keep an eye on the loading screen.'],
