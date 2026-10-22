@@ -78,6 +78,10 @@ function avatarEl(person, size = '') {
 }
 
 const time = (ts) => new Date(ts).getTime();
+
+// A bit of personality while things load.
+const LOADING_LINES = ['Charging the boom…', 'Atok coming vroom vroom…', 'Cleaning up the mess for nenek!'];
+const loadingLine = () => LOADING_LINES[Math.floor(Math.random() * LOADING_LINES.length)];
 const dayKey = (ts) => new Date(ts).toDateString();
 
 function clockTime(ts) {
@@ -354,6 +358,8 @@ function start() {
   wireExtras();
   wireLaterAndNicknames();
   wireMedia();
+  applyAppTheme(appTheme);
+  renderAppThemes();
   registerServiceWorker();
   initAutoUpdate();
 }
@@ -751,10 +757,14 @@ function insertSorted(list, m) {
 
 function dropMatchingPending(list, m) {
   if (m.sender_id !== state.user.id) return;
-  const i = m.photo_path
-    ? list.findIndex((x) => (x.pending || x.failed) && x.photo_path === m.photo_path)
-    : list.findIndex((x) => (x.pending || x.failed) && !x.upload && x.body === m.body);
-  if (i !== -1) list.splice(i, 1);
+  const i = list.findIndex((x) => (x.pending || x.failed) && (
+    m.photo_path ? x.photo_path === m.photo_path
+      : m.file_path ? x.file_path === m.file_path
+        : m.sticker_path ? x.sticker_path === m.sticker_path
+          : !x.upload && !x.uploads && !x.fileBlob && !x.sticker_path && !x.album_local && x.body === m.body));
+  if (i === -1) return;
+  sameMessage(list[i].id, m.id);
+  list.splice(i, 1);
 }
 
 function messageKind(m) {
@@ -911,6 +921,47 @@ function renderChatHeader() {
   $('chat-username').textContent = typing ? 'typing…'
     : other ? (nick ? `${other.display_name} (@${other.username})` : `@${other.username}`) : '';
   $('chat-username').classList.toggle('typing', typing);
+  updateTypingBubble(typing);
+}
+
+// The three bouncing dots under the messages while your friend types.
+function updateTypingBubble(typing) {
+  const row = $('typing-row');
+  if (row.hidden === !typing) return;
+  const box = $('messages');
+  const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 140;
+  row.hidden = !typing;
+  if (typing && nearBottom) box.scrollTop = box.scrollHeight;
+}
+
+// Messages that pop in. Each new message animates once, and carries on
+// smoothly even if the list is redrawn while it's still moving.
+const ENTRANCE_MS = 520;
+const entranceStart = new Map(); // message id -> when its entrance began
+let shownIds = new Set();
+let shownConv = null;
+
+function entrance(m, el) {
+  const now = Date.now();
+  let start = entranceStart.get(m.id);
+  if (start === undefined) {
+    if (shownIds.has(m.id) || now - time(m.created_at) > 20000) return; // history doesn't animate
+    start = now;
+    entranceStart.set(m.id, start);
+  }
+  const elapsed = now - start;
+  if (elapsed >= ENTRANCE_MS) {
+    entranceStart.delete(m.id);
+    return;
+  }
+  el.classList.add(m.sender_id === state.user.id ? 'pop' : 'arrive');
+  if (elapsed > 0) el.style.setProperty('--anim-delay', `-${elapsed}ms`);
+}
+
+// A sending message became a sent one: same message, so no second entrance.
+function sameMessage(oldId, newId) {
+  shownIds.add(newId);
+  if (entranceStart.has(oldId)) entranceStart.set(newId, entranceStart.get(oldId));
 }
 
 function renderMessages(stickToBottom = false) {
@@ -918,6 +969,11 @@ function renderMessages(stickToBottom = false) {
   const list = $('message-list');
   const convId = state.activeId;
   if (!convId) return;
+  const firstLook = shownConv !== convId; // just opened: nothing animates
+  if (firstLook) {
+    shownConv = convId;
+    shownIds = new Set();
+  }
   const msgs = state.messages.get(convId) || [];
   const wasNearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 140;
 
@@ -936,12 +992,15 @@ function renderMessages(stickToBottom = false) {
     if (!prev || dayKey(prev.created_at) !== dayKey(m.created_at)) {
       list.append(h('p', { class: 'day' }, dayLabel(m.created_at)));
     }
-    list.append(messageEl(m, sameRun(prev, m), !sameRun(m, next)));
+    const el = messageEl(m, sameRun(prev, m), !sameRun(m, next));
+    if (!firstLook) entrance(m, el);
+    shownIds.add(m.id);
+    list.append(el);
   });
 
   const waiting = state.scheduled.get(convId) || [];
   if (waiting.length) {
-    list.append(h('p', { class: 'day' }, 'Scheduled'));
+    list.append(h('p', { class: 'day scheduled-label' }, 'Scheduled'));
     for (const sm of waiting) list.append(scheduledEl(sm));
   }
 
@@ -1196,7 +1255,7 @@ async function openChat(convId) {
   input.value = state.drafts.get(convId) || '';
   autosize();
 
-  $('message-list').replaceChildren(h('p', { class: 'chat-start' }, 'Loading…'));
+  $('message-list').replaceChildren(h('p', { class: 'chat-start loading-line' }, loadingLine()));
   $('btn-older').hidden = true;
   if (state.messages.has(convId)) await fetchNewer(convId);
   else await fetchLatest(convId);
@@ -1217,6 +1276,8 @@ function closeChat({ quiet = false } = {}) {
   clearReply();
   leaveTyping();
   state.activeId = null;
+  shownConv = null;
+  $('typing-row').hidden = true;
   applyWallpaper();
   $('screen-app').classList.remove('show-chat');
   $('conversation-inner').hidden = true;
@@ -1287,6 +1348,7 @@ function settle(temp, data, error) {
     if (!isNetworkError(error)) console.warn('send failed', error);
   } else {
     state.seen.add(data.id);
+    sameMessage(temp.id, data.id);
     if (index !== -1) list.splice(index, 1);
     if (!list.some((m) => m.id === data.id)) insertSorted(list, data);
     updateChatPreview(data, false);
@@ -1431,6 +1493,7 @@ async function deliverAlbum(temp) {
       uploaded.push(thumb);
       album.push({ path, thumb, width: u.width, height: u.height });
     }
+    temp.photo_path = album[0].path;
     const row = {
       conversation_id: convId,
       body: temp.body || '',
@@ -2765,19 +2828,26 @@ const THEME_LABELS = {
 function applyTheme() {
   const colour = THEMES[activeChat()?.theme];
   const el = $('conversation-inner');
-  if (colour) el.style.setProperty('--mine', colour);
-  else el.style.removeProperty('--mine');
+  if (colour) {
+    el.style.setProperty('--mine', colour);
+    el.style.setProperty('--mine-ink', '#FFFFFF'); // every chat colour is made for white text
+  } else {
+    el.style.removeProperty('--mine');
+    el.style.removeProperty('--mine-ink');
+  }
 }
 
 function renderSwatches() {
-  const current = activeChat()?.theme || 'hibiscus';
-  $('swatches').replaceChildren(...Object.entries(THEMES).map(([name, colour]) => h('button', {
+  const current = activeChat()?.theme || null;
+  // First: no colour of its own, so the chat follows your app theme.
+  const options = [[null, 'var(--mine)', 'App theme colour'], ...Object.entries(THEMES).map(([name, colour]) => [name, colour, THEME_LABELS[name]])];
+  $('swatches').replaceChildren(...options.map(([name, colour, label]) => h('button', {
     type: 'button',
-    class: `swatch${name === current ? ' chosen' : ''}`,
+    class: `swatch${name ? '' : ' swatch-default'}${name === current ? ' chosen' : ''}`,
     style: `background:${colour}`,
-    'aria-label': THEME_LABELS[name],
+    'aria-label': label,
     'aria-pressed': name === current ? 'true' : 'false',
-    title: THEME_LABELS[name],
+    title: label,
     onclick: () => setTheme(name),
   })));
 }
@@ -3477,6 +3547,7 @@ async function deliverFile(temp) {
     const up = await bucket.upload(path, temp.fileBlob, { contentType: 'application/octet-stream', upsert: false });
     if (up.error) throw up.error;
     uploaded = true;
+    temp.file_path = path;
     const row = {
       conversation_id: temp.conversation_id,
       body: '',
@@ -3491,6 +3562,7 @@ async function deliverFile(temp) {
     data = res.data;
   } catch (e) {
     error = e;
+    temp.file_path = null;
     if (uploaded) bucket.remove([path]).catch(() => {});
   }
   settle(temp, data, error);
@@ -3737,6 +3809,15 @@ async function setWallpaperPhoto(file) {
 
 const WHATS_NEW = [
   {
+    id: '2026-10-22-b', date: '22 October 2026', title: 'A livelier Boom Boom',
+    items: [
+      ['🎨', 'App themes.', 'Settings → App theme: Classic, Midnight, Matcha, Sunset or Mono.'],
+      ['💥', 'Messages pop.', 'Yours whoosh in with a tiny boom; your friend\'s slide in.'],
+      ['💬', 'Typing bubble.', 'Three bouncing dots while your friend is typing.'],
+      ['🛵', 'Atok is on his way.', 'Keep an eye on the loading screen.'],
+    ],
+  },
+  {
     id: '2026-10-22', needs: 'media', date: '22 October 2026', title: 'Albums, doodles, stickers and more',
     items: [
       ['🖼️', 'Albums.', 'Pick several photos at once and they arrive together as one album. Swipe through them in the viewer.'],
@@ -3894,6 +3975,56 @@ function wireMedia() {
     $('dlg-settings').close();
     showWhatsNew();
   });
+}
+
+// ---------------------------------------------------------------------
+//  App themes (saved on this device; a chat's own colour still wins)
+// ---------------------------------------------------------------------
+
+const APP_THEMES = {
+  classic: { label: 'Classic', bars: ['#EEF0F7', '#0F1124'] },
+  midnight: { label: 'Midnight', bars: ['#0A0C1E', '#0A0C1E'] },
+  matcha: { label: 'Matcha', bars: ['#EDF2E8', '#0E1710'] },
+  sunset: { label: 'Sunset', bars: ['#FFF2EA', '#1C1015'] },
+  mono: { label: 'Mono', bars: ['#F1F1F1', '#0B0B0B'] },
+};
+const APP_THEME_KEY = 'boom-app-theme';
+let appTheme = 'classic';
+try {
+  const saved = localStorage.getItem(APP_THEME_KEY);
+  if (APP_THEMES[saved]) appTheme = saved;
+} catch { /* fine: Classic */ }
+
+function applyAppTheme(name) {
+  const root = document.documentElement;
+  if (name === 'classic') root.removeAttribute('data-app-theme');
+  else root.setAttribute('data-app-theme', name);
+  // The phone's status bar matches the theme too.
+  const [light, dark] = APP_THEMES[name].bars;
+  for (const meta of document.querySelectorAll('meta[name="theme-color"]')) {
+    meta.content = (meta.getAttribute('media') || '').includes('dark') ? dark : light;
+  }
+}
+
+function setAppTheme(name) {
+  if (!APP_THEMES[name]) return;
+  appTheme = name;
+  applyAppTheme(name);
+  try { localStorage.setItem(APP_THEME_KEY, name); } catch { /* still applies until you close the app */ }
+  renderAppThemes();
+  if ($('dlg-chat').open) renderSwatches();
+}
+
+function renderAppThemes() {
+  $('app-themes').replaceChildren(...Object.entries(APP_THEMES).map(([name, t]) => h('button', {
+    type: 'button',
+    class: `app-theme${name === appTheme ? ' chosen' : ''}`,
+    'data-app-theme': name, // the tile shows itself in its own colours
+    'aria-pressed': String(name === appTheme),
+    onclick: () => setAppTheme(name),
+  },
+  h('span', { class: 'app-theme-preview', 'aria-hidden': 'true' }, h('span', { class: 'pv pv-theirs' }), h('span', { class: 'pv pv-mine' })),
+  h('span', { class: 'app-theme-name' }, t.label))));
 }
 
 // ---------------------------------------------------------------------

@@ -2,7 +2,7 @@
    Ink navy, hibiscus red for your own messages, and a yellow ripple
    (the "boom") when a new message lands in another chat. */
 
-:root {
+:root, [data-app-theme="classic"] {
   --bg: #EEF0F7;
   --surface: #FFFFFF;
   --ink: #191B33;
@@ -21,6 +21,7 @@
   --shadow: 0 24px 60px rgba(25, 27, 51, 0.28);
   --wall-ink: rgba(25, 27, 51, 0.09);
   --wall-dim: rgba(238, 240, 247, 0.3);
+  --accent-text: #C8174B; /* accent colour used for small text */
 
   --display: "Unbounded", "Arial Black", system-ui, sans-serif;
   --text: "Atkinson Hyperlegible", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
@@ -29,7 +30,7 @@
 }
 
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root, [data-app-theme="classic"] {
     --bg: #0F1124;
     --surface: #171A31;
     --ink: #ECEEFB;
@@ -44,6 +45,165 @@
     --shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
     --wall-ink: rgba(236, 238, 251, 0.07);
     --wall-dim: rgba(15, 17, 36, 0.55);
+    --accent-text: #FFC233;
+    color-scheme: dark;
+  }
+}
+
+/* ---------- App themes (Settings → App theme). Every pair of text and
+   background colours here passes WCAG AA contrast. ---------- */
+
+[data-app-theme="midnight"] {
+  --bg: #0A0C1E;
+  --surface: #131637;
+  --ink: #EEF0FF;
+  --ink-soft: #A9ADDB;
+  --line: #272B5A;
+  --active: #1E2250;
+  --mine: #7C3AED;
+  --mine-ink: #FFFFFF;
+  --theirs: #1A1D47;
+  --theirs-line: #2C3070;
+  --signal: #FBBF24;
+  --signal-ink: #191B33;
+  --focus: #FBBF24;
+  --danger: #FF8FA3;
+  --ok: #7FE0BE;
+  --shadow: 0 24px 60px rgba(0, 0, 0, 0.6);
+  --wall-ink: rgba(238, 240, 255, 0.07);
+  --wall-dim: rgba(10, 12, 30, 0.55);
+  --accent-text: #C4B5FD;
+  color-scheme: dark;
+}
+
+[data-app-theme="matcha"] {
+  --bg: #EDF2E8;
+  --surface: #FFFFFF;
+  --ink: #17251A;
+  --ink-soft: #4A5F4E;
+  --line: #D2DDCC;
+  --active: #E0EADA;
+  --mine: #2E6B3B;
+  --mine-ink: #FFFFFF;
+  --theirs: #FFFFFF;
+  --theirs-line: #D2DDCC;
+  --signal: #F2C14E;
+  --signal-ink: #17251A;
+  --focus: #1F4D29;
+  --danger: #A3122F;
+  --ok: #16684F;
+  --shadow: 0 24px 60px rgba(23, 37, 26, 0.25);
+  --wall-ink: rgba(23, 37, 26, 0.08);
+  --wall-dim: rgba(237, 242, 232, 0.3);
+  --accent-text: #2E6B3B;
+  color-scheme: light;
+}
+
+[data-app-theme="sunset"] {
+  --bg: #FFF2EA;
+  --surface: #FFFFFF;
+  --ink: #2A171C;
+  --ink-soft: #6B4D53;
+  --line: #F0D6CB;
+  --active: #FBE3D8;
+  --mine: #B83A1B;
+  --mine-ink: #FFFFFF;
+  --theirs: #FFFFFF;
+  --theirs-line: #F0D6CB;
+  --signal: #FFB547;
+  --signal-ink: #2A171C;
+  --focus: #7A2412;
+  --danger: #A3122F;
+  --ok: #16684F;
+  --shadow: 0 24px 60px rgba(42, 23, 28, 0.25);
+  --wall-ink: rgba(42, 23, 28, 0.08);
+  --wall-dim: rgba(255, 242, 234, 0.3);
+  --accent-text: #B83A1B;
+  color-scheme: light;
+}
+
+[data-app-theme="mono"] {
+  --bg: #F1F1F1;
+  --surface: #FFFFFF;
+  --ink: #111111;
+  --ink-soft: #555555;
+  --line: #DADADA;
+  --active: #E6E6E6;
+  --mine: #111111;
+  --mine-ink: #FFFFFF;
+  --theirs: #FFFFFF;
+  --theirs-line: #DADADA;
+  --signal: #111111;
+  --signal-ink: #FFFFFF;
+  --focus: #111111;
+  --danger: #A3122F;
+  --ok: #16684F;
+  --shadow: 0 24px 60px rgba(0, 0, 0, 0.22);
+  --wall-ink: rgba(17, 17, 17, 0.08);
+  --wall-dim: rgba(241, 241, 241, 0.3);
+  --accent-text: #111111;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  [data-app-theme="matcha"] {
+    --bg: #0E1710;
+    --surface: #152118;
+    --ink: #E4EFE3;
+    --ink-soft: #9EB5A1;
+    --line: #253628;
+    --active: #1D2C20;
+    --mine: #2E7D40;
+    --theirs: #1A281D;
+    --theirs-line: #2A3D2D;
+    --focus: #F2C14E;
+    --danger: #FF8FA3;
+    --ok: #7FE0BE;
+    --shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
+    --wall-ink: rgba(228, 239, 227, 0.07);
+    --wall-dim: rgba(14, 23, 16, 0.55);
+    --accent-text: #9BD88F;
+    color-scheme: dark;
+  }
+  [data-app-theme="sunset"] {
+    --bg: #1C1015;
+    --surface: #26161C;
+    --ink: #FCECE6;
+    --ink-soft: #CDA9A5;
+    --line: #3C252C;
+    --active: #331F26;
+    --mine: #C2410C;
+    --theirs: #2C1A20;
+    --theirs-line: #43292F;
+    --focus: #FFB547;
+    --danger: #FF8FA3;
+    --ok: #7FE0BE;
+    --shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
+    --wall-ink: rgba(252, 236, 230, 0.07);
+    --wall-dim: rgba(28, 16, 21, 0.55);
+    --accent-text: #FFB547;
+    color-scheme: dark;
+  }
+  [data-app-theme="mono"] {
+    --bg: #0B0B0B;
+    --surface: #161616;
+    --ink: #F2F2F2;
+    --ink-soft: #A3A3A3;
+    --line: #2B2B2B;
+    --active: #232323;
+    --mine: #F2F2F2;
+    --mine-ink: #111111;
+    --theirs: #1D1D1D;
+    --theirs-line: #303030;
+    --signal: #F2F2F2;
+    --signal-ink: #111111;
+    --focus: #F2F2F2;
+    --danger: #FF8FA3;
+    --ok: #7FE0BE;
+    --shadow: 0 24px 60px rgba(0, 0, 0, 0.6);
+    --wall-ink: rgba(242, 242, 242, 0.07);
+    --wall-dim: rgba(11, 11, 11, 0.55);
+    --accent-text: #F2F2F2;
     color-scheme: dark;
   }
 }
@@ -595,7 +755,7 @@ input:focus-visible, textarea:focus-visible { border-color: var(--focus); }
 }
 .msg.mine .msg-quote {
   border-left-color: var(--mine-ink);
-  background: rgba(255, 255, 255, 0.18);
+  background: color-mix(in srgb, var(--mine-ink) 18%, transparent);
   color: var(--mine-ink);
 }
 .msg-quote strong { font-size: 0.8rem; }
@@ -891,8 +1051,7 @@ mark { background: var(--signal); color: var(--signal-ink); border-radius: 3px; 
   background: none;
   text-align: left;
 }
-.memory-label { font-size: 0.78rem; font-weight: 700; color: var(--mine); }
-@media (prefers-color-scheme: dark) { .memory-label { color: var(--signal); } }
+.memory-label { font-size: 0.78rem; font-weight: 700; color: var(--accent-text); }
 .memory-text {
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -1269,7 +1428,7 @@ dialog.compose[open] { display: grid; grid-template-rows: auto 1fr auto auto aut
   color: var(--ink);
   text-align: left;
 }
-.msg.mine .msg-file { background: rgba(255, 255, 255, 0.16); color: var(--mine-ink); }
+.msg.mine .msg-file { background: color-mix(in srgb, var(--mine-ink) 16%, transparent); color: var(--mine-ink); }
 .file-icon {
   flex-shrink: 0;
   width: 42px;
@@ -1282,7 +1441,7 @@ dialog.compose[open] { display: grid; grid-template-rows: auto 1fr auto auto aut
   font: 700 0.68rem var(--text);
   letter-spacing: 0.02em;
 }
-.msg.mine .file-icon { background: rgba(255, 255, 255, 0.92); }
+.msg.mine .file-icon { background: var(--mine-ink); color: var(--mine); }
 .file-info { flex: 1; min-width: 0; display: grid; gap: 2px; }
 .file-info strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .file-info span { font-size: 0.8rem; opacity: 0.8; }
@@ -1433,3 +1592,122 @@ dialog.compose[open] { display: grid; grid-template-rows: auto 1fr auto auto aut
 }
 .whatsnew-foot { display: grid; padding: 8px 20px calc(16px + env(safe-area-inset-bottom)); }
 #btn-whats-new { justify-self: start; }
+
+/* ---------- App theme picker ---------- */
+
+.app-themes { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }
+.app-theme {
+  display: grid;
+  gap: 6px;
+  justify-items: center;
+  padding: 8px 4px 6px;
+  border: 1.5px solid var(--line);
+  border-radius: 14px;
+  background: var(--bg);
+  color: var(--ink);
+}
+.app-theme-preview { display: grid; gap: 4px; width: 100%; padding: 0 6px; }
+.pv { display: block; height: 10px; border-radius: 6px; }
+.pv-theirs { width: 70%; background: var(--theirs); box-shadow: inset 0 0 0 1px var(--theirs-line); }
+.pv-mine { width: 70%; justify-self: end; background: var(--mine); }
+.app-theme-name { font-size: 0.75rem; font-weight: 700; }
+#app-themes .app-theme.chosen { box-shadow: 0 0 0 3px var(--surface), 0 0 0 5px var(--focus); }
+#theme-section .hint { margin: 0; }
+@media (max-width: 380px) { .app-themes { grid-template-columns: repeat(3, 1fr); } }
+.swatch-default { box-shadow: inset 0 0 0 3px var(--surface), inset 0 0 0 5px var(--mine); }
+.swatch-default.chosen { box-shadow: inset 0 0 0 3px var(--surface), inset 0 0 0 5px var(--mine), 0 0 0 3px var(--surface), 0 0 0 6px var(--ink); }
+
+/* ---------- Messages that pop ---------- */
+
+.msg-wrap.pop .msg {
+  transform-origin: bottom right;
+  animation: msg-pop 0.42s cubic-bezier(0.2, 0.9, 0.3, 1.25) var(--anim-delay, 0ms) both;
+}
+.msg-wrap.arrive .msg {
+  transform-origin: bottom left;
+  animation: msg-arrive 0.34s cubic-bezier(0.2, 0.8, 0.2, 1) var(--anim-delay, 0ms) both;
+}
+/* the tiny "boom" behind a message you send */
+.msg-wrap.pop::after {
+  content: "";
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--mine);
+  border-radius: 999px;
+  pointer-events: none;
+  animation: msg-boom 0.5s ease-out calc(var(--anim-delay, 0ms) + 0.08s) both;
+}
+@keyframes msg-pop {
+  0% { transform: translateY(22px) scale(0.86); opacity: 0; }
+  55% { transform: translateY(-3px) scale(1.03); opacity: 1; }
+  100% { transform: none; opacity: 1; }
+}
+@keyframes msg-arrive {
+  0% { transform: translateX(-16px) scale(0.95); opacity: 0; }
+  100% { transform: none; opacity: 1; }
+}
+@keyframes msg-boom {
+  0% { transform: scale(0.4); opacity: 0.9; }
+  100% { transform: scale(3.4); opacity: 0; }
+}
+
+/* ---------- Typing bubble ---------- */
+
+.typing-row { padding-top: 10px; }
+.typing-bubble {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 13px 16px;
+  border: 1px solid var(--theirs-line);
+  border-radius: 18px 18px 18px 6px;
+  background: var(--theirs);
+  transform-origin: bottom left;
+}
+.typing-row:not([hidden]) .typing-bubble { animation: msg-arrive 0.28s ease-out both; }
+.typing-bubble .dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--ink-soft);
+  animation: typing-dot 1.2s ease-in-out infinite;
+}
+.typing-bubble .dot:nth-child(2) { animation-delay: 0.15s; }
+.typing-bubble .dot:nth-child(3) { animation-delay: 0.3s; }
+@keyframes typing-dot {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.45; }
+  30% { transform: translateY(-5px); opacity: 1; }
+}
+
+/* ---------- Loading lines ---------- */
+
+.loading-line { animation: breathe 1.6s ease-in-out infinite; }
+@keyframes breathe { 50% { opacity: 0.55; } }
+
+/* ---------- Smoother everywhere ---------- */
+
+@keyframes sheet-up { from { transform: translateY(26px); opacity: 0; } }
+@keyframes fade-in { from { opacity: 0; } }
+@keyframes slide-in { from { transform: translateX(26px); opacity: 0.4; } }
+dialog.sheet[open] { animation: sheet-up 0.24s cubic-bezier(0.2, 0.8, 0.2, 1); }
+dialog.viewer[open] { animation: fade-in 0.18s ease-out; }
+dialog[open]::backdrop { animation: fade-in 0.2s ease-out; }
+@keyframes toast-in { from { transform: translate(-50%, 16px); opacity: 0; } to { transform: translateX(-50%); } }
+.toast:not([hidden]) { animation: toast-in 0.22s cubic-bezier(0.2, 0.8, 0.2, 1); }
+.send { transition: transform 0.12s ease-out, opacity 0.15s; }
+.send:active:not(:disabled) { transform: scale(0.88); }
+@media (max-width: 760px) {
+  .app.show-chat .conversation { animation: slide-in 0.24s cubic-bezier(0.2, 0.8, 0.2, 1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

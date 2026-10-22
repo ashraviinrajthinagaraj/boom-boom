@@ -17,6 +17,10 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=Unbounded:wght@600;800&display=swap">
+  <script>
+    // Put on your chosen app theme before anything is drawn (no flash of the wrong colours).
+    try { var t = localStorage.getItem('boom-app-theme'); if (t && t !== 'classic') document.documentElement.setAttribute('data-app-theme', t); } catch (e) {}
+  </script>
   <link rel="stylesheet" href="style.css">
   <script type="module" src="app.js"></script>
 </head>
@@ -26,7 +30,13 @@
   <main id="boot" class="screen center">
     <div class="card">
       <p class="wordmark small"><span>Boom</span><span class="echo">Boom</span></p>
-      <p id="boot-msg" class="muted">Loading…</p>
+      <p id="boot-msg" class="muted loading-line">Loading…</p>
+      <script>
+        (function () {
+          var lines = ['Charging the boom…', 'Atok coming vroom vroom…', 'Cleaning up the mess for nenek!'];
+          document.getElementById('boot-msg').textContent = lines[Math.floor(Math.random() * lines.length)];
+        })();
+      </script>
       <button id="boot-retry" class="btn primary" type="button" hidden>Reload</button>
     </div>
   </main>
@@ -142,6 +152,9 @@
         <div id="messages" class="messages">
           <button id="btn-older" class="btn ghost small" type="button" hidden>Show earlier messages</button>
           <div id="message-list" class="message-list"></div>
+          <div id="typing-row" class="message-list typing-row" aria-hidden="true" hidden>
+            <div class="typing-bubble"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
+          </div>
         </div>
         <button id="btn-jump" class="jump" type="button" hidden>New messages</button>
         <div id="edit-bar" class="reply-bar" hidden>
@@ -202,6 +215,12 @@
       </button>
     </header>
     <div class="sheet-body">
+      <section class="form" id="theme-section" aria-labelledby="theme-title">
+        <h3 id="theme-title">App theme</h3>
+        <div id="app-themes" class="app-themes" role="group" aria-label="App theme"></div>
+        <p class="hint">Changes Boom Boom's look on this device. A colour you pick for a chat still wins in that chat.</p>
+      </section>
+
       <section class="form" id="notify-section" aria-labelledby="notify-title">
         <h3 id="notify-title">Notifications</h3>
         <p id="notify-status" class="muted"></p>

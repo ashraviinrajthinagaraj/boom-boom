@@ -22,6 +22,8 @@ Created by Ashraviinraj Thinagaraj.
 - **Stickers** made from your own photos
 - **Chat wallpaper** per chat, just for you
 - **What's new**: a short card after each update, so friends find new features
+- **App themes**: Classic, Midnight, Matcha, Sunset and Mono, each with a light and dark look (Midnight is always dark)
+- Messages that pop in, a bouncing **typing bubble**, and loading lines with a bit of personality
 - **CPR**: a scheduled check-in that stops the free Supabase project from pausing
 - Updates itself: when a new version is on GitHub, the app refreshes the next time you come back to it
 - Unread badges, a count in the browser tab, and a little "boom" ripple when a message lands in another chat
@@ -141,6 +143,8 @@ Tap **⊕** next to the message box:
 - **Doodle:** a blank page to draw on with your finger, sent as a picture.
 - **Stickers:** tap **New**, pick a photo, crop it, choose square, rounded or circle, add text if you like, and **Save sticker**. Tap a sticker to send it. Press and hold a friend's sticker → **Save to my stickers**. **Edit** in the sticker tray removes stickers.
 - **File:** anything up to 25 MB. Tap a file in the chat to download it.
+
+**App theme:** **Settings → App theme**. It's saved on each device, and a colour you pick for a chat still wins in that chat (pick *App theme colour*, the first circle, to follow the theme again). If your phone is set to reduce motion, the animations switch off.
 
 **Wallpaper:** in a chat, **⋮ → Wallpaper**. Pick a pattern (they follow light and dark mode, and *Glow* takes the chat's colour) or your own photo.
 
